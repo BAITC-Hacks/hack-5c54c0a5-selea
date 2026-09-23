@@ -125,6 +125,14 @@ main { flex: 1; min-height: 0; display: grid; grid-template-columns: 300px minma
 .latency-grid .latency-total { grid-column: 1/-1; display: flex; align-items: center; justify-content: space-between; padding-inline: 9px; background: var(--green); color: #fff; }
 .latency-grid .latency-total span { color: #c8efe0; }
 .latency-grid .latency-total b { margin: 0; }
+.stats-grid { display: grid; grid-template-columns: repeat(4,1fr); gap: 5px; }
+.stats-grid div { min-width: 0; padding: 8px 6px; border-radius: 7px; background: #f5f7f6; }
+.stats-grid span, .stats-grid b { display: block; }
+.stats-grid span { overflow: hidden; color: var(--muted); font-size: 7px; text-overflow: ellipsis; text-transform: uppercase; white-space: nowrap; }
+.stats-grid b { margin-top: 3px; font-size: 10px; font-weight: 500; }
+.dev-accuracy { margin-top: 7px; color: var(--muted); font-size: 8px; }
+.trace-chip.error { background: #fff0ef; color: #a03730; }
+.trace-chip.preview { background: #fff3df; color: #845707; }
 .trace-scenario { margin-bottom: 7px; padding: 10px; border: 1px solid var(--line); border-radius: 9px; }
 .trace-scenario:last-child { margin-bottom: 0; }
 .trace-scenario-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }

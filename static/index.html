@@ -1,18 +1,23 @@
 <!doctype html>
 <html lang="ru">
+
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="theme-color" content="#f2f0ea">
-  <title>Voice Router — Saqta Insurance</title>
+  <title>Voice Router</title>
   <link rel="stylesheet" href="/styles.css">
 </head>
+
 <body>
   <div class="app-shell">
     <header class="topbar">
       <a class="brand" href="#" aria-label="Voice Router">VOICE ROUTER</a>
       <div class="top-actions">
-        <label class="language-picker"><span class="sr-only">Язык распознавания</span><select id="speechLang"><option value="ru-RU">RU</option><option value="kk-KZ">KZ</option></select></label>
+        <label class="language-picker"><span class="sr-only">Язык распознавания</span><select id="speechLang">
+            <option value="ru-RU">RU</option>
+            <option value="kk-KZ">KZ</option>
+          </select></label>
         <div id="status" class="system-status"><i></i><span>Подключение</span></div>
       </div>
     </header>
@@ -20,7 +25,9 @@
     <main>
       <aside class="transcript-panel" aria-label="Транскрипция звонка">
         <div class="panel-heading">
-          <div><span class="section-kicker">LIVE SESSION</span><h1>Транскрипция</h1></div>
+          <div><span class="section-kicker">LIVE SESSION</span>
+            <h1>Транскрипция</h1>
+          </div>
           <span id="callTimer" class="timer">00:00</span>
         </div>
         <div id="messages" class="transcript-feed" aria-live="polite">
@@ -31,7 +38,8 @@
         </div>
         <form id="textFallback" class="text-fallback">
           <label for="textInput">Резервный текстовый ввод</label>
-          <div><input id="textInput" type="text" autocomplete="off" placeholder="Введите реплику клиента…"><button id="textSend" type="submit" aria-label="Отправить текст">→</button></div>
+          <div><input id="textInput" type="text" autocomplete="off" placeholder="Введите реплику клиента…"><button
+              id="textSend" type="submit" aria-label="Отправить текст">→</button></div>
         </form>
         <div class="scenario-card">
           <span class="scenario-label">ТЕКУЩИЙ СЦЕНАРИЙ</span>
@@ -50,18 +58,27 @@
           <p id="callHint">Нажмите на кнопку и разрешите доступ к микрофону</p>
           <button id="callButton" class="call-button" type="button" aria-label="Начать звонок" aria-pressed="false">
             <span class="button-ring ring-one"></span><span class="button-ring ring-two"></span>
-            <span class="waveform" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></span>
-            <span class="phone-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M6.62 10.79a15.46 15.46 0 0 0 6.59 6.59l2.2-2.2a1 1 0 0 1 1.02-.24c1.12.37 2.33.57 3.57.57a1 1 0 0 1 1 1V20a1 1 0 0 1-1 1C10.61 21 3 13.39 3 4a1 1 0 0 1 1-1h3.5a1 1 0 0 1 1 1c0 1.25.2 2.45.57 3.57a1 1 0 0 1-.25 1.02l-2.2 2.2Z"/></svg></span>
+            <span class="waveform"
+              aria-hidden="true"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></span>
+            <span class="phone-icon" aria-hidden="true"><svg viewBox="0 0 24 24">
+                <path
+                  d="M6.62 10.79a15.46 15.46 0 0 0 6.59 6.59l2.2-2.2a1 1 0 0 1 1.02-.24c1.12.37 2.33.57 3.57.57a1 1 0 0 1 1 1V20a1 1 0 0 1-1 1C10.61 21 3 13.39 3 4a1 1 0 0 1 1-1h3.5a1 1 0 0 1 1 1c0 1.25.2 2.45.57 3.57a1 1 0 0 1-.25 1.02l-2.2 2.2Z" />
+              </svg></span>
           </button>
           <div id="callState" class="call-state"><i></i><span>Нажмите, чтобы начать</span></div>
           <button id="reset" class="new-call" type="button" hidden>Завершить разговор</button>
         </div>
-        <div class="privacy-note"><svg viewBox="0 0 24 24"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10Zm0-4.2c-2.1-1.3-4.7-3.7-4.7-5.8V7.3L12 5.5l4.7 1.8V12c0 2.1-2.6 4.5-4.7 5.8Z"/></svg>Распознавание и синтез голоса выполняет OpenAI · голос создан ИИ</div>
+        <div class="privacy-note"><svg viewBox="0 0 24 24">
+            <path
+              d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10Zm0-4.2c-2.1-1.3-4.7-3.7-4.7-5.8V7.3L12 5.5l4.7 1.8V12c0 2.1-2.6 4.5-4.7 5.8Z" />
+          </svg>Распознавание и синтез голоса выполняет OpenAI · голос создан ИИ</div>
       </section>
 
       <aside class="supervisor-panel" aria-label="Панель супервизора">
         <div class="panel-heading supervisor-heading">
-          <div><span class="section-kicker">DECISION TRACE</span><h1>Супервизор</h1></div>
+          <div><span class="section-kicker">DECISION TRACE</span>
+            <h1>Супервизор</h1>
+          </div>
           <span id="traceTurn" class="turn-badge">—</span>
         </div>
         <div id="traceEmpty" class="trace-empty">
@@ -69,6 +86,16 @@
         </div>
         <div id="traceContent" class="trace-content" hidden>
           <div id="confidenceAlert" class="confidence-alert"><i></i><span></span></div>
+          <section class="trace-section">
+            <h3>Статистика сессии</h3>
+            <div class="stats-grid">
+              <div><span>Реплики</span><b id="statsTurns">0</b></div>
+              <div><span>Сомнения</span><b id="statsUncertain">0</b></div>
+              <div><span>Операторы</span><b id="statsHandoffs">0</b></div>
+              <div><span>Router p50</span><b id="statsP50">—</b></div>
+            </div>
+            <div id="devAccuracy" class="dev-accuracy">Dev-набор ещё не рассчитан</div>
+          </section>
           <section class="trace-section">
             <h3>Задержка по этапам</h3>
             <div class="latency-grid">
@@ -80,7 +107,9 @@
             </div>
           </section>
           <section class="trace-section">
-            <div class="trace-section-title"><h3>Выбранные сценарии</h3><span id="multiIntentBadge" class="mini-badge" hidden>MULTI-INTENT</span></div>
+            <div class="trace-section-title">
+              <h3>Выбранные сценарии</h3><span id="multiIntentBadge" class="mini-badge" hidden>MULTI-INTENT</span>
+            </div>
             <div id="traceScenarios"></div>
           </section>
           <section class="trace-section">
@@ -92,8 +121,14 @@
             <div id="contextState" class="context-state"></div>
           </section>
           <section class="trace-section trace-two-columns">
-            <div><h3>Параметры</h3><div id="traceSlots" class="trace-muted">Не извлечены</div></div>
-            <div><h3>Действия</h3><div id="traceActions" class="trace-muted">Нет действий</div></div>
+            <div>
+              <h3>Параметры</h3>
+              <div id="traceSlots" class="trace-muted">Не извлечены</div>
+            </div>
+            <div>
+              <h3>Действия</h3>
+              <div id="traceActions" class="trace-muted">Нет действий</div>
+            </div>
           </section>
           <div class="trace-footer"><span id="traceLanguage">—</span><span id="traceMode">—</span></div>
         </div>
@@ -102,4 +137,5 @@
   </div>
   <script src="/app.js"></script>
 </body>
+
 </html>

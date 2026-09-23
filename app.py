@@ -17,6 +17,8 @@ import urllib.error
 import urllib.request
 import uuid
 from collections import Counter
+from copy import deepcopy
+from datetime import date, datetime, timedelta
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from threading import Lock
@@ -24,6 +26,7 @@ from threading import Lock
 
 ROOT = Path(__file__).resolve().parent
 STATIC = ROOT / "static"
+DATA = ROOT / "data"
 
 
 def openai_base_url() -> str:
@@ -31,12 +34,33 @@ def openai_base_url() -> str:
 
 
 def read_json(name: str):
-    return json.loads((ROOT / name).read_text(encoding="utf-8"))
+    return json.loads((DATA / name).read_text(encoding="utf-8"))
 
 
 SCENARIOS = read_json("scenarios.json")["scenarios"]
 SLOTS = read_json("slots.json")
+ACTION_DATA = read_json("actions.json")
+KNOWLEDGE_BASE = read_json("knowledge_base.json")
+MOCK_BACKEND_SOURCE = read_json("mock_backend.json")
 SCENARIO_BY_ID = {item["scenario_id"]: item for item in SCENARIOS}
+ACTION_BY_NAME = {item["name"]: item for item in ACTION_DATA["actions"]}
+MOCK_BACKEND = deepcopy(MOCK_BACKEND_SOURCE)
+BACKEND_LOCK = Lock()
+HANDOFFS: list[dict] = []
+HANDOFF_LOCK = Lock()
+STATS_LOCK = Lock()
+SUPERVISOR_STATS = {
+    "turns": 0,
+    "uncertain_turns": 0,
+    "handoffs": 0,
+    "multi_intent_turns": 0,
+    "action_errors": 0,
+    "scenario_counts": Counter(),
+    "language_counts": Counter(),
+    "router_latencies": [],
+    "recent": [],
+}
+AS_OF_DATE = date.fromisoformat(KNOWLEDGE_BASE["meta"]["as_of_date"])
 
 FAST_STOPWORDS = {
     "а", "в", "во", "и", "или", "к", "как", "на", "не", "но", "по", "с", "со", "у", "я",
@@ -273,6 +297,9 @@ Rules:
 - Distinguish neighboring scenarios using their boundaries.
 - If the utterance fills slots for the active scenario, mark is_continuation=true.
 - Use SYS_UNCLEAR only when one concise clarification is necessary.
+  A vague domain mention without a goal, event or requested action (for example,
+  'вопрос по машине' / 'сақтандыру туралы сұрақ') is SYS_UNCLEAR. Never infer quote,
+  purchase, claim or servicing merely because a product/domain noun was mentioned.
   Missing business slots (city, phone, policy number) do NOT make the intent unclear:
   choose the known scenario, needs_clarification=false; the scenario engine asks for slots.
   Never append SYS_UNCLEAR to a known route just because a slot is missing.
@@ -302,6 +329,8 @@ FEW-SHOT ROUTING EXAMPLES (semantic illustrations, not keyword rules)
   renewal is suspended, not cancelled.
 - RU: 'Не соединяйте с оператором, расскажите про франшизу' -> SC40, not SC37.
 - RU: 'Мне надо разобраться со страховкой' -> SYS_UNCLEAR and a specific clarification.
+- RU: 'У меня вопрос по машине' -> SYS_UNCLEAR; ask whether this is price, purchase,
+  policy servicing or an accident. Do not pick SC01 from the word 'машина'.
 
 The request contains detailed candidate scenarios selected by local retrieval. Prefer those details,
 but recover from the full index when retrieval missed the correct scenario.
@@ -350,6 +379,7 @@ class SessionStore:
                     "scenario_stack": [],
                     "pending_queue": [],
                     "slots": {},
+                    "action_context": {},
                     "uncertain_turns": 0,
                     "pending_confirmation": None,
                     "turn": 0,
@@ -698,11 +728,57 @@ def demo_route(text: str) -> dict:
 
 
 def detect_language(text: str) -> str:
-    kk_chars = len(re.findall(r"[ӘәҒғҚқҢңӨөҰұҮүҺһІі]", text))
-    cyr = len(re.findall(r"[А-Яа-яЁё]", text))
-    if kk_chars and cyr > kk_chars * 2:
+    words = set(re.findall(r"[а-яёәғқңөұүһі]+", text.casefold()))
+    kk_markers = {"мен", "маған", "бұл", "үшін", "және", "тағы", "қайда", "қалай", "керек", "қажет",
+                  "бар", "жоқ", "тұрамын", "тұрады", "қала", "полисімді", "сақтандыру", "шешілді", "оралайық"}
+    ru_markers = {"я", "мне", "мой", "хочу", "нужно", "надо", "где", "как", "почему", "вопрос", "машина",
+                  "оплатил", "оплатила", "деньги", "полис", "офис", "вернемся", "разобрался", "получилось"}
+    kk_signal = bool(re.search(r"[ӘәҒғҚқҢңӨөҰұҮүҺһІі]", text) or words & kk_markers)
+    ru_signal = bool(words & ru_markers)
+    if kk_signal and ru_signal:
         return "mixed"
-    return "kk" if kk_chars else "ru"
+    return "kk" if kk_signal else "ru"
+
+
+def resolved_scenarios(text: str, state: dict, model_closed: list[str]) -> list[str]:
+    """Apply explicit close/suspend semantics consistently across model variants."""
+    lowered = text.casefold()
+    known = list(dict.fromkeys(
+        state.get("active_scenarios", []) + state.get("pending_queue", [])
+        + [sid for group in state.get("scenario_stack", []) for sid in group]
+    ))
+    closed = [sid for sid in model_closed if sid in known]
+    postpone = re.search(r"\b(отложим|позже|потом верн|пока оставим|кейін|әзірге)\b", lowered)
+    if postpone:
+        return []
+    explicit = re.search(
+        r"(не нужн|не надо|отменя|разобрал|получил(?:ось)?|всё получилось|решил(?:ась|ось)?|"
+        r"закончил|закрыт|больше не|қажет емес|керек емес|шешілді|аяқталды|болды)", lowered,
+    )
+    if not explicit or closed or not known:
+        return closed
+    targeted_cancel = re.search(r"(не нужн|не надо|отменя|больше не|қажет емес|керек емес)", lowered)
+    if targeted_cancel:
+        closing_clause = re.split(r"[,.—;]|\b(?:теперь|давайте|верн.мся|снова|енді|оставьте)\b", text,
+                                  maxsplit=1, flags=re.IGNORECASE)[0]
+        query = Counter(fast_terms(closing_clause))
+        scored = []
+        for sid in known:
+            scenario = SCENARIO_BY_ID[sid]
+            examples = scenario.get("examples", {})
+            positive = " ".join([scenario.get("name", ""), scenario.get("description", ""),
+                                 *examples.get("ru", []), *examples.get("kk", [])])
+            document = Counter(fast_terms(positive))
+            score = sum(
+                FAST_IDF.get(query_term, 1)
+                for query_term in query
+                if any(query_term[:5] == doc_term[:5] for doc_term in document)
+            )
+            scored.append((score, sid))
+        score, match = max(scored, default=(0, ""))
+        if score > 0:
+            return [match]
+    return state.get("active_scenarios", [])[:1]
 
 
 def normalize_decision(decision: dict, utterance: str | None = None) -> dict:
@@ -785,6 +861,495 @@ def slot_prompt(name: str, language: str) -> str:
     return prompts.get("kk" if language == "kk" else "ru", f"Уточните {name}, пожалуйста.")
 
 
+MONTHS = {
+    "января": 1, "қаңтар": 1, "февраля": 2, "ақпан": 2, "марта": 3, "наурыз": 3,
+    "апреля": 4, "сәуір": 4, "мая": 5, "мамыр": 5, "июня": 6, "маусым": 6,
+    "июля": 7, "шілде": 7, "августа": 8, "тамыз": 8, "сентября": 9, "қыркүйек": 9,
+    "октября": 10, "қазан": 10, "ноября": 11, "қараша": 11, "декабря": 12, "желтоқсан": 12,
+}
+
+
+def extract_obvious_slots(text: str, scenario_id: str) -> dict:
+    """Extract identifiers/dates/entities that should not depend on probabilistic LLM output."""
+    lowered = text.casefold()
+    slots = {}
+    phone_match = re.search(r"(?:\+?7)[\s()\-]*\d{3}[\s()\-]*\d{3}[\s\-]*\d{2}[\s\-]*\d{2}", text)
+    if phone_match:
+        phone_digits = re.sub(r"\D", "", phone_match.group())
+        slots["phone"] = "+" + phone_digits
+    for number in re.findall(r"(?<!\d)\d{12}(?!\d)", text):
+        slots.setdefault("iin", number)
+    policy = re.search(r"SQ-(?:OGPO|CASCO|TRVL|PROP|NS|DMS)-\d{6}", text, re.IGNORECASE)
+    claim = re.search(r"CL-\d{6}", text, re.IGNORECASE)
+    plate = re.search(r"(?<![A-ZА-Я0-9])\d{3}[A-ZА-Я]{3}\d{2}(?![A-ZА-Я0-9])", text, re.IGNORECASE)
+    if policy: slots["policy_number"] = policy.group().upper()
+    if claim: slots["claim_number"] = claim.group().upper()
+    if plate: slots["vehicle_plate"] = plate.group().upper()
+    for alias, canonical in CITY_ALIASES.items():
+        if re.search(rf"(?<!\w){re.escape(alias)}(?:е|да|де|та|те)?(?!\w)", lowered):
+            slots["city"] = canonical
+            if scenario_id == "SC01": slots["region"] = canonical.casefold()
+            break
+    iso_date = re.search(r"\b(20\d{2})-(\d{2})-(\d{2})\b", text)
+    named_date = re.search(r"\b(\d{1,2})\s+(" + "|".join(MONTHS) + r")(?:а|де|да)?\b", lowered)
+    parsed_date = None
+    if iso_date:
+        parsed_date = iso_date.group()
+    elif named_date:
+        parsed_date = date(AS_OF_DATE.year, MONTHS[named_date.group(2)], int(named_date.group(1))).isoformat()
+    if parsed_date:
+        if scenario_id == "SC30": slots["payment_date"] = parsed_date
+        elif scenario_id in {"SC12", "SC13", "SC14", "SC16"}: slots["incident_date"] = parsed_date
+        elif scenario_id in {"SC20", "SC21"}: slots["preferred_date"] = parsed_date
+    if re.search(r"\b(легков|автомобиль|машина|көлік)\w*", lowered): slots["vehicle_type"] = "car"
+    elif re.search(r"\b(грузов|жүк)\w*", lowered): slots["vehicle_type"] = "truck"
+    elif re.search(r"\b(мотоцикл|мото)\w*", lowered): slots["vehicle_type"] = "motorcycle"
+    if scenario_id == "SC11":
+        slots["injured"] = "no" if re.search(r"никто не пострадал|зардап шеккен жоқ", lowered) else (
+            "yes" if re.search(r"пострадал|ранен|травм|зардап", lowered) else slots.get("injured"))
+        if slots.get("city"): slots["location"] = slots["city"]
+    if scenario_id == "SC40": slots["topic"] = text.strip()
+    if scenario_id == "SC35": slots["complaint_text"] = text.strip()
+    if scenario_id == "SC38": slots["fraud_details"] = text.strip()
+    return {key: value for key, value in slots.items() if value not in (None, "")}
+
+
+def _norm(value) -> str:
+    return re.sub(r"\s+", " ", str(value or "").strip()).casefold()
+
+
+def _as_list(value) -> list[str]:
+    if isinstance(value, list):
+        return [str(item) for item in value if str(item).strip()]
+    return [item for item in re.split(r"[,;\s]+", str(value or "")) if item]
+
+
+CITY_ALIASES = {
+    "алматы": "Almaty", "астана": "Astana", "шымкент": "Shymkent", "караганда": "Karaganda",
+    "қарағанды": "Karaganda", "актобе": "Aktobe", "ақтөбе": "Aktobe", "атырау": "Atyrau",
+    "павлодар": "Pavlodar", "оскемен": "Oskemen", "өскемен": "Oskemen", "семей": "Semey",
+    "костанай": "Kostanay", "қостанай": "Kostanay",
+}
+
+
+def canonical_city(value) -> str:
+    return CITY_ALIASES.get(_norm(value), str(value or "").strip().title())
+
+
+def find_client_record(context: dict) -> dict | None:
+    phone, iin = _norm(context.get("phone")), _norm(context.get("iin"))
+    client_id = context.get("client_id")
+    client = next((client for client in MOCK_BACKEND["clients"] if
+                 (client_id and client["client_id"] == client_id)
+                 or (phone and _norm(client["phone"]) == phone)
+                 or (iin and _norm(client["iin"]) == iin)), None)
+    if client:
+        return client
+    policy_number = _norm(context.get("policy_number"))
+    policy = next((item for item in MOCK_BACKEND["policies"] if policy_number and
+                   _norm(item["policy_number"]) == policy_number), None)
+    claim_number = _norm(context.get("claim_number"))
+    claim = next((item for item in MOCK_BACKEND["claims"] if claim_number and
+                  _norm(item["claim_number"]) == claim_number), None)
+    derived_id = (policy or claim or {}).get("client_id")
+    return next((item for item in MOCK_BACKEND["clients"] if item["client_id"] == derived_id), None)
+
+
+def find_policy_record(context: dict) -> dict | None:
+    number, plate = _norm(context.get("policy_number")), _norm(context.get("vehicle_plate"))
+    policies = MOCK_BACKEND["policies"]
+    if number:
+        return next((item for item in policies if _norm(item["policy_number"]) == number), None)
+    if plate:
+        return next((item for item in policies if _norm(item.get("details", {}).get("vehicle_plate")) == plate), None)
+    client_id = context.get("client_id")
+    return next((item for item in policies if client_id and item["client_id"] == client_id), None)
+
+
+def policy_status(policy: dict) -> str:
+    if policy.get("status") == "cancelled":
+        return "cancelled"
+    start = date.fromisoformat(policy["start_date"])
+    end = date.fromisoformat(policy["end_date"])
+    return "active" if start <= AS_OF_DATE <= end else "expired" if end < AS_OF_DATE else "pending"
+
+
+def action_inputs_available(action_name: str, context: dict) -> tuple[bool, list[str]]:
+    if action_name == "find_client" and any(context.get(name) for name in
+                                             ("client_id", "policy_number", "claim_number", "phone", "iin")):
+        return True, []
+    if action_name == "send_sms" and (context.get("client_id") or context.get("phone")):
+        return True, []
+    missing = []
+    for spec in ACTION_BY_NAME[action_name].get("inputs", []):
+        options = spec.split("|")
+        if not any(context.get(name) not in (None, "", []) for name in options):
+            missing.append(spec)
+    return not missing, missing
+
+
+def knowledge_answer(scenario_id: str, context: dict):
+    kb = KNOWLEDGE_BASE
+    if scenario_id == "SC11":
+        return kb["claims"]["road_accident_now"]
+    if scenario_id == "SC18":
+        kind = _norm(context.get("product_type")) or "ogpo_victim"
+        return kb["claims"]["documents"].get(kind, kb["claims"]["documents"]["ogpo_victim"])
+    if scenario_id == "SC24":
+        return kb["products"]["dms"]["e_card"]
+    if scenario_id == "SC31":
+        return kb["payments"]
+    if scenario_id == "SC32":
+        return kb["bonus_malus"]
+    if scenario_id == "SC34":
+        return kb["app_help"]
+    if scenario_id == "SC38":
+        return kb["fraud_policy"]
+    if scenario_id == "SC40":
+        topic = _norm(context.get("topic"))
+        if "франш" in topic:
+            return "Franchise is the part of an insured loss paid by the client; a higher franchise lowers CASCO price."
+        return {"company": kb["company"]["name"], "products": list(kb["products"]), "topic": context.get("topic", "insurance terms")}
+    if scenario_id in {"SC03", "SC07", "SC08", "SC09"}:
+        product = {"SC03": "casco", "SC07": "property", "SC08": "accident", "SC09": "dms"}[scenario_id]
+        return kb["products"][product]
+    return kb["company"]
+
+
+def execute_mock_action(name: str, context: dict, scenario_id: str) -> dict:
+    """Execute one deterministic action over an in-memory copy of the starter data."""
+    with BACKEND_LOCK:
+        client = find_client_record(context)
+        policy = find_policy_record(context)
+        if name == "find_client":
+            if not client:
+                return {"error": "not_found", "message": "Клиент не найден"}
+            return {"client_id": client["client_id"], "full_name": client["full_name"], "city": client["city"]}
+        if name == "get_policies":
+            rows = [item for item in MOCK_BACKEND["policies"] if item["client_id"] == context.get("client_id")]
+            return {"policies": [{"policy_number": item["policy_number"], "product": item["product"],
+                                  "status": policy_status(item), "end_date": item["end_date"]} for item in rows]}
+        if name == "get_policy":
+            if not policy:
+                return {"error": "not_found", "message": "Полис не найден"}
+            return {"policy_number": policy["policy_number"], "product": policy["product"],
+                    "status": policy_status(policy), "end_date": policy["end_date"],
+                    "client_id": policy["client_id"], "details": policy.get("details", {})}
+        if name == "get_bm_class":
+            iins = _as_list(context.get("drivers_iin") or context.get("iin"))
+            result = {}
+            for iin in iins:
+                match = next((item for item in MOCK_BACKEND["clients"] if item["iin"] == iin), None)
+                result[iin] = match["bm_class"] if match else MOCK_BACKEND["defaults"]["unknown_iin_bm_class"]
+            return {"bm_classes": result, "bm_class": min(result.values(), key=lambda value: int(value)) if result else "3"}
+        if name == "calc_ogpo_price":
+            pricing = KNOWLEDGE_BASE["products"]["ogpo"]["pricing"]
+            region = _norm(context.get("region")) or "other"
+            vehicle = _norm(context.get("vehicle_type")) or "car"
+            bm = str(context.get("bm_class", "3"))
+            price = pricing["base_by_region_kzt"].get(region, pricing["base_by_region_kzt"]["other"])
+            price *= pricing["vehicle_type_coef"].get(vehicle, 1.0) * pricing["bm_coef"].get(bm, 1.0)
+            return {"price": round(price)}
+        if name == "calc_casco_price":
+            value = float(context.get("car_value", 0))
+            year = int(context.get("car_year", AS_OF_DATE.year))
+            franchise = str(context.get("franchise", "0"))
+            age = AS_OF_DATE.year - year
+            if age > 15:
+                return {"error": "not_eligible", "message": "Автомобиль старше 15 лет"}
+            band = "0-3" if age <= 3 else "4-7" if age <= 7 else "8-10"
+            pricing = KNOWLEDGE_BASE["products"]["casco"]["pricing"]
+            return {"price": round(value * pricing["rate_by_car_age"].get(band, .065)
+                                   * pricing["franchise_coef"].get(franchise, 1.0))}
+        if name == "calc_travel_price":
+            country = _norm(context.get("trip_country"))
+            zone = "D" if country in {"usa", "сша", "canada", "канада"} else "B" if country in {
+                "uk", "великобритания", "germany", "france", "германия", "франция"} else "A" if country in {
+                "georgia", "грузия", "russia", "россия", "uzbekistan", "узбекистан"} else "C"
+            age = int(context.get("traveler_max_age", 30))
+            if age > 75:
+                return {"error": "not_eligible", "message": "Для путешественника старше 75 лет нужен оператор"}
+            start = date.fromisoformat(str(context["trip_start"])); end = date.fromisoformat(str(context["trip_end"]))
+            days = max(1, (end - start).days + 1); count = int(context.get("travelers_count", 1))
+            zone_data = KNOWLEDGE_BASE["products"]["travel"]["zones"][zone]
+            return {"price": round(zone_data["rate_per_day_kzt"] * days * count * (2 if age >= 65 else 1)),
+                    "zone": zone, "coverage": zone_data["coverage"]}
+        if name == "calc_property_price":
+            options = KNOWLEDGE_BASE["products"]["property"]["price_per_year_kzt"]
+            insured = int(context.get("sum_insured", 0)); nearest = min(options, key=lambda key: abs(int(key) - insured))
+            coef = 1.5 if _norm(context.get("property_type")) in {"house", "дом", "үй"} else 1
+            return {"price": round(options[nearest] * coef)}
+        if name == "calc_accident_price":
+            options = KNOWLEDGE_BASE["products"]["accident"]["price_per_year_kzt"]
+            insured = int(context.get("sum_insured", 0)); nearest = min(options, key=lambda key: abs(int(key) - insured))
+            return {"price": options[nearest]}
+        if name == "create_policy":
+            number = f"SQ-{str(context.get('product_type', 'POL')).upper()[:4]}-{105200 + len(MOCK_BACKEND['policies'])}"
+            client_id = client["client_id"] if client else "NEW"
+            MOCK_BACKEND["policies"].append({"policy_number": number, "client_id": client_id,
+                "product": _norm(context.get("product_type")) or "ogpo", "start_date": AS_OF_DATE.isoformat(),
+                "end_date": (AS_OF_DATE + timedelta(days=364)).isoformat(), "premium": context.get("price"),
+                "details": {key: context[key] for key in ("vehicle_plate", "vehicle_type", "drivers_iin") if key in context}})
+            return {"policy_number": number}
+        if name == "renew_policy":
+            if not policy: return {"error": "not_found", "message": "Полис не найден"}
+            policy["end_date"] = (date.fromisoformat(policy["end_date"]) + timedelta(days=365)).isoformat()
+            return {"policy_number": policy["policy_number"], "price": policy.get("premium"), "end_date": policy["end_date"]}
+        if name == "update_policy":
+            if not policy: return {"error": "not_found", "message": "Полис не найден"}
+            policy["details"].update({key: context[key] for key in ("new_driver_iin", "vehicle_plate") if key in context})
+            return {"extra_premium": 0, "policy_number": policy["policy_number"]}
+        if name == "cancel_policy":
+            if not policy: return {"error": "not_found", "message": "Полис не найден"}
+            if policy_status(policy) != "active": return {"error": "policy_inactive", "message": "Полис не действует"}
+            policy["status"] = "cancelled"; refund = round((policy.get("premium") or 0) * .5)
+            return {"refund_amount": refund, "policy_number": policy["policy_number"]}
+        if name == "create_claim":
+            number = f"CL-{500400 + len(MOCK_BACKEND['claims'])}"
+            MOCK_BACKEND["claims"].append({"claim_number": number, "client_id": context.get("client_id", "NEW"),
+                "policy_number": context.get("policy_number"), "claim_type": context.get("product_type", "unknown"),
+                "incident_date": context.get("incident_date"), "status": "registered", "next_step": "Upload required documents."})
+            return {"claim_number": number}
+        if name == "get_claim":
+            number = _norm(context.get("claim_number")); client_id = context.get("client_id")
+            claim = next((item for item in MOCK_BACKEND["claims"] if (number and _norm(item["claim_number"]) == number)
+                          or (not number and client_id and item["client_id"] == client_id)), None)
+            return ({"claim_number": claim["claim_number"], "status": claim["status"], "next_step": claim["next_step"]}
+                    if claim else {"error": "not_found", "message": "Страховой случай не найден"})
+        if name == "create_dispute":
+            return {"ticket_id": f"DSP-{uuid.uuid4().hex[:6].upper()}"}
+        if name == "book_inspection":
+            city = canonical_city(context.get("city")); points = KNOWLEDGE_BASE["inspection_points"]
+            point = next((item for item in points if item["city"] == city), points[-1])
+            return {"slot_datetime": f"{context.get('preferred_date')} 10:00", "address": point["address"]}
+        if name == "book_appointment":
+            clinics = [item for item in KNOWLEDGE_BASE["clinics"] if item["city"] == canonical_city(context.get("city"))]
+            clinic = clinics[0] if clinics else None
+            return ({"clinic_name": clinic["name"], "slot_datetime": f"{context.get('preferred_date')} 10:00"}
+                    if clinic else {"error": "no_availability", "message": "Клиника в городе не найдена"})
+        if name == "check_coverage":
+            if not policy: return {"error": "not_found", "message": "Полис не найден"}
+            package = policy.get("details", {}).get("package", "Basic")
+            info = KNOWLEDGE_BASE["products"]["dms"]["packages"].get(package, {})
+            service = _norm(context.get("service_name")); covered = any(service in _norm(item) for item in info.get("covered", []))
+            return {"covered": covered, "note": f"Пакет {package}"}
+        if name == "list_clinics":
+            city = canonical_city(context.get("city")); specialty = _norm(context.get("doctor_specialty"))
+            clinics = [item for item in KNOWLEDGE_BASE["clinics"] if item["city"] == city and
+                       (not specialty or any(specialty in _norm(spec) for spec in item["specialties"]))]
+            return {"clinics": clinics}
+        if name == "resend_documents":
+            if not policy: return {"error": "not_found", "message": "Полис не найден"}
+            return {"sent_to": client["phone"] if client else context.get("phone", "registered contact"),
+                    "policy_number": policy["policy_number"]}
+        if name == "check_payment":
+            rows = [item for item in MOCK_BACKEND["payments"] if item["client_id"] == context.get("client_id") and
+                    (not context.get("payment_date") or item["date"] == context["payment_date"])]
+            payment = rows[-1] if rows else None
+            return ({"payment_status": payment["status"], "amount": payment["amount"], "payment_id": payment["payment_id"]}
+                    if payment else {"error": "not_found", "message": "Платёж не найден"})
+        if name == "update_contact":
+            if not client: return {"error": "not_found", "message": "Клиент не найден"}
+            field = str(context.get("contact_field")); client[field] = context.get("new_value")
+            return {"updated": field}
+        if name == "request_document":
+            return {"sent_to": context.get("email") or (client or {}).get("email", "registered email"),
+                    "document_type": context.get("document_type")}
+        if name == "get_offices":
+            city = canonical_city(context.get("city")); rows = [item for item in KNOWLEDGE_BASE["offices"] if item["city"] == city]
+            return {"offices": rows}
+        if name == "kb_lookup":
+            return {"answer": knowledge_answer(scenario_id, context)}
+        if name == "send_sms":
+            return {"sent_to": context.get("phone") or (client or {}).get("phone", "registered phone")}
+        if name == "create_callback":
+            return {"callback_id": f"CB-{uuid.uuid4().hex[:6].upper()}", "callback_time": context.get("callback_time")}
+        if name == "create_complaint":
+            return {"ticket_id": f"CMP-{uuid.uuid4().hex[:6].upper()}"}
+        if name == "report_fraud":
+            return {"ticket_id": f"FRD-{uuid.uuid4().hex[:6].upper()}"}
+        if name == "transfer_to_operator":
+            return {"queued": True, "queue": context.get("queue", "operator_general")}
+    return {"error": "service_unavailable", "message": f"Действие {name} не реализовано"}
+
+
+def execute_action_pipeline(scenario: dict, state: dict, confirmed: bool) -> list[dict]:
+    context = {**state.get("action_context", {}), **state["slots"]}
+    product = scenario.get("slug", "").split("_", 1)[0]
+    context.setdefault("product_type", {"home": "property", "individual": "accident"}.get(product, product))
+    if context.get("culprit_vehicle_plate") and not context.get("vehicle_plate"):
+        context["vehicle_plate"] = context["culprit_vehicle_plate"]
+    handoff_rule = scenario.get("handoff") or {}
+    context.setdefault("queue", handoff_rule.get("queue", "operator_general"))
+    traces = []
+    awaiting_confirmation = False
+    for name in scenario.get("actions", []):
+        spec = ACTION_BY_NAME.get(name, {})
+        irreversible = bool(spec.get("irreversible"))
+        if awaiting_confirmation and not confirmed:
+            traces.append({"name": name, "mode": "preview", "status": "blocked_by_confirmation"})
+            continue
+        if name == "transfer_to_operator":
+            always = "always" in _norm(handoff_rule.get("when"))
+            injured = _norm(context.get("injured")) in {"yes", "true", "да", "иә", "есть", "бар"}
+            failed_payment = context.get("payment_status") == "charged_policy_not_issued"
+            if not (always or injured or failed_payment):
+                traces.append({"name": name, "mode": "execute", "status": "condition_not_met"})
+                continue
+        if irreversible and not confirmed:
+            traces.append({"name": name, "mode": "preview", "status": "awaiting_confirmation"})
+            awaiting_confirmation = True
+            continue
+        available, missing = action_inputs_available(name, context)
+        if not available:
+            traces.append({"name": name, "mode": "execute", "status": "skipped", "missing": missing})
+            continue
+        result = execute_mock_action(name, context, scenario["scenario_id"])
+        status = "error" if result.get("error") else "done"
+        traces.append({"name": name, "mode": "execute", "status": status, "result": result})
+        if status == "error":
+            break
+        context.update(result)
+    state["action_context"].update({key: value for key, value in context.items() if key not in {"answer", "policies", "clinics", "offices"}})
+    return traces
+
+
+def format_money(value) -> str:
+    try:
+        return f"{int(value):,}".replace(",", " ") + " ₸"
+    except (TypeError, ValueError):
+        return str(value)
+
+
+def reply_from_actions(scenario_id: str, actions: list[dict], language: str) -> str | None:
+    done = [item["result"] for item in actions if item.get("status") == "done"]
+    error = next((item["result"] for item in actions if item.get("status") == "error"), None)
+    if error:
+        return ("Дерек табылмады. Нөмірді нақтылаңыз немесе операторға қосыламын."
+                if language == "kk" else f"{error.get('message', 'Данные не найдены')}. Уточните данные или я подключу оператора.")
+    merged = {}
+    for result in done: merged.update(result)
+    if "price" in merged:
+        return (f"Есептелген баға — {format_money(merged['price'])}." if language == "kk"
+                else f"Расчётная стоимость — {format_money(merged['price'])}.")
+    if scenario_id == "SC33" and "offices" in merged:
+        rows = merged["offices"]
+        if not rows: return "Бұл қалада бөлімше табылмады." if language == "kk" else "В этом городе офис не найден."
+        row = rows[0]; return (f"Мекенжай: {row['address']}. Жұмыс уақыты: {row['hours']}." if language == "kk"
+                               else f"Адрес: {row['address']}. Время работы: {row['hours']}.")
+    if scenario_id == "SC23" and "clinics" in merged:
+        rows = merged["clinics"][:3]
+        names = "; ".join(f"{item['name']} — {item['address']}" for item in rows)
+        return (("Қолжетімді клиникалар: " if language == "kk" else "Доступные клиники: ") + names) if rows else (
+            "Сәйкес клиника табылмады." if language == "kk" else "Подходящих клиник не найдено.")
+    if "payment_status" in merged:
+        status = merged["payment_status"]
+        return (f"Төлем {format_money(merged.get('amount'))}: {status}." if language == "kk"
+                else f"Платёж {format_money(merged.get('amount'))}: статус {status}.")
+    if "claim_number" in merged and "status" in merged:
+        return (f"Өтініш {merged['claim_number']}: {merged['status']}. {merged.get('next_step', '')}" if language == "kk"
+                else f"Обращение {merged['claim_number']}: статус {merged['status']}. {merged.get('next_step', '')}")
+    if "policies" in merged:
+        policies = merged["policies"]
+        values = "; ".join(f"{p['policy_number']} ({p['product']}, {p['status']}, до {p['end_date']})" for p in policies)
+        return ("Полистеріңіз: " if language == "kk" else "Ваши полисы: ") + (values or "—")
+    if "policy_number" in merged and scenario_id in {"SC02", "SC27"}:
+        return (f"Дайын: полис {merged['policy_number']}." if language == "kk" else f"Готово: полис {merged['policy_number']}.")
+    if "policy_number" in merged and "status" in merged:
+        return (f"Полис {merged['policy_number']}: {merged['status']}, {merged['end_date']} дейін." if language == "kk"
+                else f"Полис {merged['policy_number']}: статус {merged['status']}, действует до {merged['end_date']}.")
+    if "covered" in merged:
+        return (("Қызмет бағдарламаға кіреді. " if merged["covered"] else "Қызмет бағдарламаға кірмейді. ") if language == "kk"
+                else ("Услуга входит в покрытие. " if merged["covered"] else "Услуга не входит в покрытие. ")) + merged.get("note", "")
+    if scenario_id == "SC31" and "answer" in merged:
+        methods = merged["answer"]["methods"]
+        return ("Төлем тәсілдері: " if language == "kk" else "Способы оплаты: ") + "; ".join(methods) + "."
+    if scenario_id == "SC11" and "answer" in merged:
+        return ("Қазір: " if language == "kk" else "Сейчас сделайте следующее: ") + " ".join(merged["answer"][:3])
+    if scenario_id == "SC34" and "answer" in merged:
+        return ("Кіру үшін: " if language == "kk" else "Для входа: ") + merged["answer"]["login"]
+    if scenario_id == "SC40" and "answer" in merged:
+        answer = merged["answer"]
+        return str(answer) if isinstance(answer, str) else ("Нақты терминді атаңыз." if language == "kk" else "Назовите конкретный страховой термин.")
+    if "sent_to" in merged:
+        return (f"Жіберілді: {merged['sent_to']}." if language == "kk" else f"Отправлено: {merged['sent_to']}.")
+    if "ticket_id" in merged:
+        return (f"Өтініш тіркелді: {merged['ticket_id']}." if language == "kk" else f"Обращение зарегистрировано: {merged['ticket_id']}.")
+    return None
+
+
+def create_handoff_ticket(state: dict, text: str, selected: list[str], queue: str, reason: str) -> dict:
+    ticket = {
+        "handoff_id": f"HO-{uuid.uuid4().hex[:8].upper()}",
+        "created_at": datetime.now().astimezone().isoformat(timespec="seconds"),
+        "queue": queue,
+        "status": "waiting",
+        "reason": reason,
+        "routes": selected,
+        "slots": deepcopy(state["slots"]),
+        "transcript": deepcopy(state["history"]),
+        "summary": f"Последняя реплика: {text}. Маршруты: {', '.join(selected) or 'не определены'}.",
+    }
+    with HANDOFF_LOCK:
+        HANDOFFS.append(ticket)
+        del HANDOFFS[:-100]
+    return ticket
+
+
+def _percentile(values: list[int], p: float):
+    if not values:
+        return None
+    ordered = sorted(values)
+    return ordered[max(0, math.ceil(len(ordered) * p) - 1)]
+
+
+def read_dev_metrics() -> dict | None:
+    path = DATA / "dev_metrics.json"
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+
+
+def stats_snapshot() -> dict:
+    with STATS_LOCK:
+        latencies = list(SUPERVISOR_STATS["router_latencies"])
+        return {
+            "turns": SUPERVISOR_STATS["turns"],
+            "uncertain_turns": SUPERVISOR_STATS["uncertain_turns"],
+            "handoffs": SUPERVISOR_STATS["handoffs"],
+            "multi_intent_turns": SUPERVISOR_STATS["multi_intent_turns"],
+            "action_errors": SUPERVISOR_STATS["action_errors"],
+            "scenario_counts": dict(SUPERVISOR_STATS["scenario_counts"].most_common()),
+            "language_counts": dict(SUPERVISOR_STATS["language_counts"]),
+            "router_latency_ms": {"p50": _percentile(latencies, .5), "p95": _percentile(latencies, .95)},
+            "recent": deepcopy(SUPERVISOR_STATS["recent"]),
+            "dev_evaluation": read_dev_metrics(),
+        }
+
+
+def record_supervisor_stats(response: dict):
+    trace = response["trace"]
+    action_errors = sum(item.get("status") == "error" for item in trace["actions"])
+    with STATS_LOCK:
+        SUPERVISOR_STATS["turns"] += 1
+        SUPERVISOR_STATS["uncertain_turns"] += int(trace["needs_clarification"])
+        SUPERVISOR_STATS["handoffs"] += int(response["handoff"])
+        SUPERVISOR_STATS["multi_intent_turns"] += int(trace["multi_intent"])
+        SUPERVISOR_STATS["action_errors"] += action_errors
+        SUPERVISOR_STATS["language_counts"][trace["language"]] += 1
+        SUPERVISOR_STATS["router_latencies"].append(trace["latency_ms"]["router"])
+        del SUPERVISOR_STATS["router_latencies"][:-1000]
+        for scenario in trace["scenarios"]:
+            SUPERVISOR_STATS["scenario_counts"][scenario["scenario_id"]] += 1
+        SUPERVISOR_STATS["recent"].append({
+            "turn": trace["turn"], "routes": [item["scenario_id"] for item in trace["scenarios"]],
+            "confidence": trace["scenarios"][0]["confidence"], "needs_clarification": trace["needs_clarification"],
+            "handoff": response["handoff"], "router_ms": trace["latency_ms"]["router"],
+        })
+        del SUPERVISOR_STATS["recent"][:-20]
+
+
 def build_reply(decision: dict, state: dict, confirmed: bool = False) -> tuple[str, list[dict]]:
     primary = decision["scenarios"][0]
     scenario_id = primary["scenario_id"]
@@ -821,23 +1386,27 @@ def build_reply(decision: dict, state: dict, confirmed: bool = False) -> tuple[s
     missing = [name for name in scenario.get("slots", {}).get("required", []) if name not in state["slots"]]
     if missing:
         return mention_queue(slot_prompt(missing[0], language)), []
+    needs_identity = "find_client" in scenario.get("actions", [])
+    identity = {**state.get("action_context", {}), **state["slots"]}
+    if needs_identity and not any(identity.get(name) for name in
+                                  ("client_id", "phone", "iin", "policy_number", "claim_number")):
+        return mention_queue(slot_prompt("phone", language)), []
 
-    actions = []
-    mode = "execute" if confirmed or not scenario.get("requires_confirmation") else "preview"
-    for name in scenario.get("actions", []):
-        actions.append({"name": name, "mode": mode})
+    actions = execute_action_pipeline(scenario, state, confirmed)
+    action_reply = reply_from_actions(scenario_id, actions, language)
     if confirmed:
         state["pending_confirmation"] = None
-        reply = (
+        reply = action_reply or (
             "Расталды. Әрекет тестілік жүйеде орындалды."
             if language == "kk"
             else "Подтверждение получено. Действие выполнено в тестовой системе."
         )
-    elif scenario.get("requires_confirmation"):
+    elif any(item.get("status") == "awaiting_confirmation" for item in actions):
         state["pending_confirmation"] = scenario_id
-        reply = "Деректер дұрыс па? Растайсыз ба?" if language == "kk" else "Проверьте данные. Подтверждаете выполнение?"
+        confirmation = "Деректер дұрыс па? Растайсыз ба?" if language == "kk" else "Проверьте данные. Подтверждаете выполнение?"
+        reply = f"{action_reply} {confirmation}" if action_reply else confirmation
     else:
-        reply = scenario.get("responses", {}).get("kk" if language == "kk" else "ru", {}).get("opening", "Запрос принят.")
+        reply = action_reply or scenario.get("responses", {}).get("kk" if language == "kk" else "ru", {}).get("opening", "Запрос принят.")
     return mention_queue(reply), actions
 
 
@@ -895,6 +1464,7 @@ def route_turn(payload: dict, text: str, sid: str, state: dict) -> dict:
                 if use_cache:
                     remember_decision(text, decision)
     decision = normalize_decision(decision, text)
+    decision["language"] = detect_language(text)
     known_requests = (set(state["active_scenarios"]) | set(state["pending_queue"])
                       | {sid for group in state["scenario_stack"] for sid in group})
     # Some models echo already queued/suspended intents and quote an older turn.
@@ -909,11 +1479,15 @@ def route_turn(payload: dict, text: str, sid: str, state: dict) -> dict:
             current.append(item)
     decision["scenarios"] = current
     decision["uncertain_scenarios"] = [item["scenario_id"] for item in current if item["confidence"] < 0.75]
-    decision["closed_scenarios"] = [sid for sid in decision["closed_scenarios"]
-                                    if sid in known_requests and not decision["needs_clarification"]]
+    decision["closed_scenarios"] = (resolved_scenarios(text, state, decision["closed_scenarios"])
+                                    if not decision["needs_clarification"] else [])
     for slot in decision.get("slots", []):
         if isinstance(slot, dict) and slot.get("name") in SLOT_BY_NAME and str(slot.get("value", "")).strip():
             state["slots"][slot["name"]] = slot.get("value", "")
+    obvious_slots = extract_obvious_slots(text, decision["scenarios"][0]["scenario_id"])
+    for name, value in obvious_slots.items():
+        state["slots"].setdefault(name, value)
+    decision["deterministic_slots"] = sorted(obvious_slots)
 
     top = decision["scenarios"][0]
     if decision["needs_clarification"]:
@@ -932,12 +1506,22 @@ def route_turn(payload: dict, text: str, sid: str, state: dict) -> dict:
 
     response_started = time.perf_counter()
     reply, actions = build_reply(decision, state, confirmed=confirmed)
+    handoff = handoff or any(
+        item.get("name") == "transfer_to_operator" and item.get("status") == "done" for item in actions
+    )
     response_ms = round((time.perf_counter() - response_started) * 1000)
     state["history"].extend([
         {"role": "user", "text": text, "language": decision["language"]},
         {"role": "assistant", "text": reply, "language": decision["language"]},
     ])
     state["history"] = state["history"][-20:]
+    handoff_ticket = None
+    if handoff:
+        scenario_meta = SCENARIO_BY_ID.get(top["scenario_id"], {})
+        queue = (scenario_meta.get("handoff") or {}).get("queue", "operator_general")
+        reason = "explicit_request" if payload.get("request_operator") or top["scenario_id"] == "SC37" else (
+            "low_confidence" if state["uncertain_turns"] >= 2 else "scenario_policy")
+        handoff_ticket = create_handoff_ticket(state, text, selected, queue, reason)
 
     def decorate(item: dict) -> dict:
         enriched = dict(item)
@@ -957,11 +1541,13 @@ def route_turn(payload: dict, text: str, sid: str, state: dict) -> dict:
         confidence_band = "low" if confidence < 0.45 else "medium"
     elif decision["uncertain_scenarios"]:
         confidence_band = "medium"
-    return {
+    response = {
         "session_id": sid,
         "reply": reply,
         "handoff": handoff,
-        "handoff_summary": f"Запрос: {text}. Маршруты: {', '.join(selected) or top['scenario_id']}." if handoff else "",
+        "handoff_summary": handoff_ticket["summary"] if handoff_ticket else "",
+        "handoff_ticket": ({key: handoff_ticket[key] for key in ("handoff_id", "queue", "status", "reason")}
+                           if handoff_ticket else None),
         "trace": {
             "turn": state["turn"],
             "transcript": text,
@@ -982,6 +1568,7 @@ def route_turn(payload: dict, text: str, sid: str, state: dict) -> dict:
                 {"path": "confirmation", "retrieval_ms": 0, "candidate_ids": [], "service_tier": "local"},
             ),
             "slots": state["slots"],
+            "deterministic_slots": decision.get("deterministic_slots", []),
             "actions": actions,
             "dialog_state": {
                 "active_scenarios": state["active_scenarios"],
@@ -994,6 +1581,8 @@ def route_turn(payload: dict, text: str, sid: str, state: dict) -> dict:
             "mode": "llm" if os.getenv("OPENAI_API_KEY") else "demo",
         },
     }
+    record_supervisor_stats(response)
+    return response
 
 
 class Handler(SimpleHTTPRequestHandler):
@@ -1024,6 +1613,13 @@ class Handler(SimpleHTTPRequestHandler):
         self.wfile.write(data)
 
     def do_GET(self):
+        if self.path == "/api/stats":
+            self.send_json(200, stats_snapshot())
+            return
+        if self.path == "/api/handoffs":
+            with HANDOFF_LOCK:
+                self.send_json(200, {"handoffs": deepcopy(HANDOFFS[-20:])})
+            return
         if self.path == "/api/config":
             self.send_json(
                 200,
@@ -1033,6 +1629,8 @@ class Handler(SimpleHTTPRequestHandler):
                     "stt_model": os.getenv("OPENAI_STT_MODEL", "gpt-4o-mini-transcribe"),
                     "tts_model": os.getenv("OPENAI_TTS_MODEL", "gpt-4o-mini-tts"),
                     "scenario_count": len(SCENARIOS),
+                    "action_count": len(ACTION_BY_NAME),
+                    "mock_clients": len(MOCK_BACKEND["clients"]),
                     "router_version": "edges-v4",
                 },
             )

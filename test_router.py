@@ -26,6 +26,16 @@ class RouterTests(unittest.TestCase):
         self.sessions = patch.object(app, "SESSIONS", app.SessionStore())
         self.sessions.start()
         self.addCleanup(self.sessions.stop)
+        self.backend = patch.object(app, "MOCK_BACKEND", copy.deepcopy(app.MOCK_BACKEND_SOURCE))
+        self.backend.start()
+        self.addCleanup(self.backend.stop)
+        app.HANDOFFS.clear()
+        with app.STATS_LOCK:
+            app.SUPERVISOR_STATS.update({
+                "turns": 0, "uncertain_turns": 0, "handoffs": 0, "multi_intent_turns": 0,
+                "action_errors": 0, "scenario_counts": app.Counter(), "language_counts": app.Counter(),
+                "router_latencies": [], "recent": [],
+            })
         app._router_cache.clear()
         self.sid, self.state = app.SESSIONS.get(None)
 
@@ -101,7 +111,7 @@ class RouterTests(unittest.TestCase):
     def test_explicit_confirmation_executes_previewed_scenario(self):
         self.state["pending_confirmation"] = "SC29"
         self.state["active_scenarios"] = ["SC29"]
-        self.state["slots"] = {"contact_field": "phone", "new_value": "+77010000000"}
+        self.state["slots"] = {"phone": "+77010000001", "contact_field": "phone", "new_value": "+77010000000"}
         response, model = self.turn("Да, подтверждаю!", decision("SYS_UNCLEAR"))
         model.assert_not_called()
         self.assertTrue(response["trace"]["actions"])
@@ -236,6 +246,105 @@ class RouterTests(unittest.TestCase):
         normalized = app.normalize_decision(result)
         self.assertTrue(normalized["needs_clarification"])
         self.assertEqual(normalized["_router_meta"]["response_error"], "invalid_or_incomplete_output")
+
+    def test_office_action_reads_knowledge_base(self):
+        response, _ = self.turn("Офис в Алматы", decision("SC33", slots=[{"name": "city", "value": "Алматы"}]))
+        self.assertIn("Abai Ave 150", response["reply"])
+        action = response["trace"]["actions"][0]
+        self.assertEqual((action["name"], action["status"]), ("get_offices", "done"))
+
+    def test_office_city_is_extracted_without_llm_slot(self):
+        response, _ = self.turn("Где находится офис в Алматы?", decision("SC33"))
+        self.assertIn("Abai Ave 150", response["reply"])
+        self.assertEqual(response["trace"]["deterministic_slots"], ["city"])
+
+    def test_phone_and_named_date_are_extracted_for_payment(self):
+        response, _ = self.turn(
+            "С карты +7 701 000 00 03 списали деньги 30 сентября",
+            decision("SC30"),
+        )
+        self.assertIn("31 200", response["reply"])
+        self.assertEqual(self.state["slots"]["phone"], "+77010000003")
+        self.assertEqual(self.state["slots"]["payment_date"], "2026-09-30")
+        self.assertTrue(response["handoff"])
+
+    def test_structured_identifiers_are_extracted(self):
+        slots = app.extract_obvious_slots(
+            "Полис SQ-OGPO-104501, заявка CL-204901, авто 123ABC02", "SC15"
+        )
+        self.assertEqual(slots["policy_number"], "SQ-OGPO-104501")
+        self.assertEqual(slots["claim_number"], "CL-204901")
+        self.assertEqual(slots["vehicle_plate"], "123ABC02")
+
+    def test_payment_action_reads_backend_and_creates_handoff(self):
+        result = decision("SC30", slots=[{"name": "phone", "value": "+77010000003"},
+                                         {"name": "payment_date", "value": "2026-09-30"}])
+        response, _ = self.turn("Списали деньги 30 сентября", result)
+        self.assertIn("31 200", response["reply"])
+        self.assertTrue(response["handoff"])
+        self.assertEqual(response["handoff_ticket"]["queue"], "operator_general")
+        self.assertEqual(len(app.HANDOFFS), 1)
+        self.assertEqual(app.HANDOFFS[0]["transcript"][-2]["text"], "Списали деньги 30 сентября")
+
+    def test_irreversible_action_waits_for_confirmation(self):
+        result = decision("SC29", slots=[{"name": "phone", "value": "+77010000001"},
+                                         {"name": "contact_field", "value": "email"},
+                                         {"name": "new_value", "value": "new@mail.example"}])
+        preview, _ = self.turn("Поменяйте email", result)
+        update = next(item for item in preview["trace"]["actions"] if item["name"] == "update_contact")
+        self.assertEqual(update["status"], "awaiting_confirmation")
+        self.assertNotEqual(app.MOCK_BACKEND["clients"][0]["email"], "new@mail.example")
+        confirmed, model = self.turn("Да, подтверждаю", decision("SYS_UNCLEAR"))
+        model.assert_not_called()
+        self.assertEqual(app.MOCK_BACKEND["clients"][0]["email"], "new@mail.example")
+        self.assertTrue(any(item.get("status") == "done" for item in confirmed["trace"]["actions"]))
+
+    def test_identity_is_requested_before_client_action(self):
+        result = decision("SC29", slots=[{"name": "contact_field", "value": "email"},
+                                         {"name": "new_value", "value": "new@mail.example"}])
+        response, _ = self.turn("Поменяйте email", result)
+        self.assertEqual(response["trace"]["actions"], [])
+        self.assertIn("номер телефона", response["reply"])
+
+    def test_stats_collect_routes_uncertainty_actions_and_handoffs(self):
+        self.turn("Офис в Алматы", decision("SC33", slots=[{"name": "city", "value": "Алматы"}]))
+        self.turn("Непонятно", decision("SYS_UNCLEAR"))
+        stats = app.stats_snapshot()
+        self.assertEqual(stats["turns"], 2)
+        self.assertEqual(stats["uncertain_turns"], 1)
+        self.assertEqual(stats["scenario_counts"]["SC33"], 1)
+        self.assertIsNotNone(stats["router_latency_ms"]["p50"])
+
+    def test_policy_lookup_derives_client_from_policy_number(self):
+        context = {"policy_number": "SQ-OGPO-104501"}
+        client = app.find_client_record(context)
+        self.assertEqual(client["client_id"], "C001")
+
+    def test_topic_postponement_suspends_instead_of_closing(self):
+        self.state["active_scenarios"] = ["SC26"]
+        result = decision("SC34", closed_scenarios=["SC26"])
+        response, _ = self.turn("Отложим полис. Не могу войти в приложение", result)
+        self.assertEqual(response["trace"]["closed_scenarios"], [])
+        self.assertIn(["SC26"], response["trace"]["dialog_state"]["stack"])
+
+    def test_explicit_resolution_closes_previous_active_topic(self):
+        self.state["active_scenarios"] = ["SC34"]
+        self.state["scenario_stack"] = [["SC26"]]
+        response, _ = self.turn("С приложением всё получилось, вернёмся к полису", decision("SC26"))
+        self.assertEqual(response["trace"]["closed_scenarios"], ["SC34"])
+        self.assertNotIn(["SC34"], response["trace"]["dialog_state"]["stack"])
+
+    def test_explicit_pending_cancellation_uses_named_topic(self):
+        self.state["active_scenarios"] = ["SC33"]
+        self.state["pending_queue"] = ["SC31"]
+        response, _ = self.turn("Про способы оплаты уже не нужно, оставьте офис", decision("SC33"))
+        self.assertEqual(response["trace"]["closed_scenarios"], ["SC31"])
+        self.assertEqual(response["trace"]["dialog_state"]["pending_queue"], [])
+
+    def test_language_detector_uses_current_utterance_only(self):
+        self.assertEqual(app.detect_language("Мен Астанада тұрамын"), "kk")
+        self.assertEqual(app.detect_language("Лучше сначала объясните, почему изменился класс"), "ru")
+        self.assertEqual(app.detect_language("Ақша списали, бірақ полис не появился"), "mixed")
 
     def test_edge_fixture_ids_and_dialogue_lengths(self):
         cases = app.read_json("edge_dialogues.json")["dialogues"]

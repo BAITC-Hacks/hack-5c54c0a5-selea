@@ -1,0 +1,50 @@
+{
+  "total": 104,
+  "primary_accuracy": 1.0,
+  "full_match": 1.0,
+  "multi_intent_recall": 1.0,
+  "groups": {
+    "all": {
+      "n": 104,
+      "primary_accuracy": 1.0,
+      "full_match": 1.0
+    },
+    "lang=ru": {
+      "n": 52,
+      "primary_accuracy": 1.0,
+      "full_match": 1.0
+    },
+    "type=single": {
+      "n": 84,
+      "primary_accuracy": 1.0,
+      "full_match": 1.0
+    },
+    "lang=kk": {
+      "n": 45,
+      "primary_accuracy": 1.0,
+      "full_match": 1.0
+    },
+    "lang=mixed": {
+      "n": 7,
+      "primary_accuracy": 1.0,
+      "full_match": 1.0
+    },
+    "type=multi_intent": {
+      "n": 13,
+      "primary_accuracy": 1.0,
+      "full_match": 1.0
+    },
+    "type=out_of_scope": {
+      "n": 4,
+      "primary_accuracy": 1.0,
+      "full_match": 1.0
+    },
+    "type=unclear": {
+      "n": 3,
+      "primary_accuracy": 1.0,
+      "full_match": 1.0
+    }
+  },
+  "error_count": 0,
+  "errors": []
+}

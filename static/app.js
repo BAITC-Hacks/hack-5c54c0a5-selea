@@ -8,6 +8,12 @@ let utteranceEndedAt = null, lastTraceData = null, lastTimings = {};
 const formatTime = (date = new Date()) => date.toLocaleTimeString("ru-RU", {hour: "2-digit", minute: "2-digit"});
 const escapeHtml = value => String(value).replace(/[&<>'"]/g, char => ({"&":"&amp;","<":"&lt;",">":"&gt;","'":"&#39;",'"':"&quot;"}[char]));
 const ms = value => Number.isFinite(value) ? `${Math.round(value)} ms` : "—";
+const compactResult = result => {
+  if (!result) return "";
+  if (result.error) return result.message || result.error;
+  const keys = Object.keys(result).filter(key => !["details", "answer", "clinics", "offices", "policies"].includes(key));
+  return keys.slice(0, 2).map(key => `${key}: ${Array.isArray(result[key]) ? result[key].length : result[key]}`).join(" · ");
+};
 function setCallCopy(title, hint, eyebrow = "ЗВОНОК АКТИВЕН") { $("callTitle").textContent = title; $("callHint").textContent = hint; $("callEyebrow").textContent = eyebrow; }
 function setVoiceState(state, label) {
   $("callButton").classList.toggle("active", state !== "idle");
@@ -105,16 +111,39 @@ function renderSupervisor(data, timings = {}) {
   $("contextState").innerHTML = context.join("") || '<span class="trace-muted">Контекст пуст</span>';
   const slotEntries = Object.entries(trace.slots || {});
   $("traceSlots").innerHTML = slotEntries.length ? slotEntries.map(([key, value]) => `<span class="trace-chip">${escapeHtml(key)}: ${escapeHtml(value)}</span>`).join(" ") : "Не извлечены";
-  $("traceActions").innerHTML = trace.actions.length ? trace.actions.map(item => `<span class="trace-chip">${escapeHtml(item.name)} · ${escapeHtml(item.mode)}</span>`).join(" ") : "Нет действий";
+  $("traceActions").innerHTML = trace.actions.length ? trace.actions.map(item => {
+    const tone = item.status === "error" ? " error" : item.mode === "preview" ? " preview" : "";
+    const details = compactResult(item.result) || (item.missing?.length ? `нужно: ${item.missing.join(", ")}` : item.status || "");
+    return `<span class="trace-chip${tone}" title="${escapeHtml(details)}">${escapeHtml(item.name)} · ${escapeHtml(item.status || item.mode)}</span>`;
+  }).join(" ") : "Нет действий";
   $("traceLanguage").textContent = `Язык: ${trace.language}`;
   const routerPath = trace.router_meta?.path || trace.mode;
   const tier = trace.router_meta?.service_tier || "default";
   $("traceMode").textContent = `${routerPath} · ${tier}`;
   if (data.handoff) {
     alert.className = "confidence-alert low";
-    alert.querySelector("span").textContent = "Передача оператору: " + data.handoff_summary;
+    const ticket = data.handoff_ticket;
+    alert.querySelector("span").textContent = ticket
+      ? `Оператор: ${ticket.handoff_id} · ${ticket.queue}`
+      : "Передача оператору: " + data.handoff_summary;
   }
   updateLatency(timings);
+  refreshStats();
+}
+
+async function refreshStats() {
+  try {
+    const response = await fetch("/api/stats"); if (!response.ok) return;
+    const stats = await response.json();
+    $("statsTurns").textContent = stats.turns;
+    $("statsUncertain").textContent = stats.uncertain_turns;
+    $("statsHandoffs").textContent = stats.handoffs;
+    $("statsP50").textContent = ms(stats.router_latency_ms?.p50);
+    const dev = stats.dev_evaluation;
+    $("devAccuracy").textContent = dev
+      ? `Dev: primary ${Math.round(dev.primary_accuracy * 100)}% · full ${Math.round(dev.full_match * 100)}% · ${dev.total} реплик`
+      : "Dev-набор ещё не рассчитан";
+  } catch (_) {}
 }
 
 function browserSpeak(text, language) {
@@ -281,3 +310,4 @@ $("textFallback").addEventListener("submit", event => {
   routeTranscript(text, {stt: 0, endedAt: performance.now()}, true);
 });
 checkAudioSupport();
+refreshStats();

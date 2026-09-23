@@ -41,8 +41,8 @@ def percentile(values, p):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--url", help="Optional running server URL; otherwise calls the local implementation with OPENAI_API_KEY")
-    parser.add_argument("--dataset", type=Path, default=app.ROOT / "edge_dialogues.json")
-    parser.add_argument("--output", type=Path, default=app.ROOT / "edge_report.json")
+    parser.add_argument("--dataset", type=Path, default=app.DATA / "edge_dialogues.json")
+    parser.add_argument("--output", type=Path, default=app.DATA / "edge_report.json")
     parser.add_argument("--case", help="Run only a specific dialogue id")
     args = parser.parse_args()
     url = args.url.rstrip("/") if args.url else None
