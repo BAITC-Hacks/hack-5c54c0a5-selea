@@ -3,8 +3,11 @@ let sessionId = localStorage.getItem("voice-router-session") || null;
 let callActive = false, processing = false, mediaStream = null, mediaRecorder = null;
 let audioContext = null, analyser = null, monitorFrame = null, currentAudio = null, chunks = [];
 let callStartedAt = null, timerId = null, lastScenario = null;
+let utteranceEndedAt = null, lastTraceData = null, lastTimings = {};
 
 const formatTime = (date = new Date()) => date.toLocaleTimeString("ru-RU", {hour: "2-digit", minute: "2-digit"});
+const escapeHtml = value => String(value).replace(/[&<>'"]/g, char => ({"&":"&amp;","<":"&lt;",">":"&gt;","'":"&#39;",'"':"&quot;"}[char]));
+const ms = value => Number.isFinite(value) ? `${Math.round(value)} ms` : "—";
 function setCallCopy(title, hint, eyebrow = "ЗВОНОК АКТИВЕН") { $("callTitle").textContent = title; $("callHint").textContent = hint; $("callEyebrow").textContent = eyebrow; }
 function setVoiceState(state, label) {
   $("callButton").classList.toggle("active", state !== "idle");
@@ -32,12 +35,86 @@ function addScenarioSwitch(id) {
 
 function renderScenario(data) {
   const scenario = data.trace.scenarios[0]; if (!scenario) return;
-  if (lastScenario !== scenario.scenario_id) addScenarioSwitch(scenario.scenario_id); lastScenario = scenario.scenario_id;
+  if (!data.trace.needs_clarification && !data.trace.closed_scenarios?.includes(scenario.scenario_id)) {
+    if (lastScenario !== scenario.scenario_id) addScenarioSwitch(scenario.scenario_id);
+    lastScenario = scenario.scenario_id;
+  }
   const state = $("scenarioState"); state.querySelector(".scenario-number").textContent = scenario.scenario_id;
-  state.querySelector("strong").textContent = `${Math.round(scenario.confidence * 100)}% уверенности`;
+  state.querySelector("strong").textContent = data.trace.needs_clarification
+    ? "Маршрут требует уточнения"
+    : `${Math.round(scenario.confidence * 100)}% · оценка модели`;
   state.querySelector("small").textContent = scenario.reason || "Активный маршрут разговора";
   $("scenarioConfidence").hidden = false; $("confidenceValue").style.width = `${Math.round(scenario.confidence * 100)}%`;
   $("messages").scrollTop = $("messages").scrollHeight;
+}
+
+function updateLatency(timings = {}) {
+  lastTimings = {...lastTimings, ...timings};
+  const trace = lastTraceData?.trace;
+  $("sttLatency").textContent = ms(lastTimings.stt);
+  $("routerLatency").textContent = ms(trace?.latency_ms?.router);
+  $("scenarioLatency").textContent = ms(trace?.latency_ms?.response);
+  $("ttsLatency").textContent = ms(lastTimings.tts);
+  const pipeline = Number(lastTimings.stt || 0) + Number(trace?.latency_ms?.total || 0) + Number(lastTimings.tts || 0);
+  const realTotal = lastTimings.endedAt && lastTimings.audioStartedAt ? lastTimings.audioStartedAt - lastTimings.endedAt : pipeline;
+  $("totalLatency").textContent = ms(realTotal);
+}
+
+function renderSupervisor(data, timings = {}) {
+  lastTraceData = data;
+  lastTimings = timings;
+  const trace = data.trace;
+  $("traceEmpty").hidden = true;
+  $("traceContent").hidden = false;
+  $("traceTurn").textContent = `#${trace.turn}`;
+  const alert = $("confidenceAlert");
+  alert.className = `confidence-alert ${trace.confidence_band || "high"}`;
+  alert.querySelector("span").textContent = trace.confidence_band === "low"
+    ? "Низкая уверенность — требуется переспрос или оператор"
+    : trace.confidence_band === "medium"
+      ? "Средняя уверенность — робот уточняет запрос"
+      : "Высокая уверенность маршрутизации";
+  alert.title = "Оценки модели не являются статистически откалиброванными вероятностями.";
+  if (!trace.needs_clarification && trace.uncertain_scenarios?.length) {
+    alert.querySelector("span").textContent = `Нужно проверить дополнительные намерения: ${trace.uncertain_scenarios.join(", ")}`;
+  }
+  if (trace.uncertainty_reasons?.includes("close_alternatives")) {
+    alert.querySelector("span").textContent = `Близкие альтернативы · разница ${Math.round(trace.ambiguity_gap * 100)} п.п. — нужен переспрос`;
+  }
+  if (trace.router_meta?.path === "local-fast-path" && !trace.needs_clarification) {
+    alert.querySelector("span").textContent = "Fast path — маршрут выбран локально без ожидания LLM";
+  }
+  $("multiIntentBadge").hidden = !trace.multi_intent;
+  $("traceScenarios").innerHTML = trace.scenarios.map(item => `
+    <article class="trace-scenario">
+      <div class="trace-scenario-head"><span class="trace-scenario-id">${escapeHtml(item.scenario_id)}</span><span class="trace-scenario-name">${escapeHtml(item.name)}</span><span class="trace-scenario-confidence">${Math.round(item.confidence * 100)}%</span></div>
+      <div class="trace-bar"><i style="width:${Math.round(item.confidence * 100)}%"></i></div>
+      <p>${escapeHtml(item.reason)}</p>
+    </article>`).join("");
+  $("traceAlternatives").innerHTML = trace.alternatives.length
+    ? trace.alternatives.map(item => `<div class="trace-alternative"><span><b>${escapeHtml(item.scenario_id)}</b> · ${escapeHtml(item.name)}<br>${escapeHtml(item.why_rejected || "")}</span><b>${Math.round(item.confidence * 100)}%</b></div>`).join("")
+    : "Нет альтернатив";
+  const context = [];
+  if (trace.is_continuation) context.push('<span class="context-chip">Продолжение сценария</span>');
+  for (const id of trace.dialog_state.active_scenarios || []) context.push(`<span class="context-chip">Активен: ${escapeHtml(id)}</span>`);
+  for (const id of trace.dialog_state.pending_queue || []) context.push(`<span class="context-chip queue">В очереди: ${escapeHtml(id)}</span>`);
+  for (const group of trace.dialog_state.stack || []) {
+    for (const id of group) context.push(`<span class="context-chip">Приостановлен: ${escapeHtml(id)}</span>`);
+  }
+  for (const id of trace.closed_scenarios || []) context.push(`<span class="context-chip">Закрыт: ${escapeHtml(id)}</span>`);
+  $("contextState").innerHTML = context.join("") || '<span class="trace-muted">Контекст пуст</span>';
+  const slotEntries = Object.entries(trace.slots || {});
+  $("traceSlots").innerHTML = slotEntries.length ? slotEntries.map(([key, value]) => `<span class="trace-chip">${escapeHtml(key)}: ${escapeHtml(value)}</span>`).join(" ") : "Не извлечены";
+  $("traceActions").innerHTML = trace.actions.length ? trace.actions.map(item => `<span class="trace-chip">${escapeHtml(item.name)} · ${escapeHtml(item.mode)}</span>`).join(" ") : "Нет действий";
+  $("traceLanguage").textContent = `Язык: ${trace.language}`;
+  const routerPath = trace.router_meta?.path || trace.mode;
+  const tier = trace.router_meta?.service_tier || "default";
+  $("traceMode").textContent = `${routerPath} · ${tier}`;
+  if (data.handoff) {
+    alert.className = "confidence-alert low";
+    alert.querySelector("span").textContent = "Передача оператору: " + data.handoff_summary;
+  }
+  updateLatency(timings);
 }
 
 function browserSpeak(text, language) {
@@ -49,34 +126,50 @@ function browserSpeak(text, language) {
 }
 
 async function speak(text, language) {
-  if (!callActive) return;
+  if (!callActive) return {};
+  const ttsStartedAt = performance.now();
+  let audioStartedAt = null;
   setVoiceState("speaking", "OpenAI озвучивает ответ"); setCallCopy("Отвечаю", "После ответа можете продолжить говорить");
   try {
     const response = await fetch("/api/speech", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({text, language})});
     if (!response.ok) throw new Error("OpenAI TTS unavailable");
     const blob = await response.blob(), url = URL.createObjectURL(blob);
     await new Promise(resolve => {
-      currentAudio = new Audio(url); currentAudio.onended = resolve; currentAudio.onerror = resolve; currentAudio.play().catch(resolve);
+      currentAudio = new Audio(url);
+      currentAudio.onplaying = () => { audioStartedAt ??= performance.now(); };
+      currentAudio.onended = resolve; currentAudio.onerror = resolve; currentAudio.play().catch(resolve);
     });
     URL.revokeObjectURL(url); currentAudio = null;
-  } catch (_) { await browserSpeak(text, language); }
+  } catch (_) {
+    audioStartedAt = performance.now();
+    await browserSpeak(text, language);
+  }
+  return {tts: (audioStartedAt || performance.now()) - ttsStartedAt, audioStartedAt: audioStartedAt || performance.now()};
 }
 
-async function routeTranscript(text) {
-  if (!text.trim() || processing || !callActive) return;
-  processing = true; addTranscript("client", text.trim()); setVoiceState("processing", "Определяю сценарий"); setCallCopy("Обрабатываю", "LLM выбирает нужный сценарий разговора");
+async function routeTranscript(text, timings = {}, allowIdle = false) {
+  if (!text.trim() || processing || (!callActive && !allowIdle)) return;
+  processing = true;
+  $("textInput").disabled = true; $("textSend").disabled = true;
+  addTranscript("client", text.trim());
+  if (callActive) { setVoiceState("processing", "Определяю сценарий"); setCallCopy("Обрабатываю", "LLM выбирает нужный сценарий разговора"); }
   try {
     const response = await fetch("/api/route", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({text: text.trim(), session_id: sessionId})});
     const data = await response.json(); if (!response.ok) throw new Error(data.error || "Ошибка маршрутизации");
-    sessionId = data.session_id; localStorage.setItem("voice-router-session", sessionId); renderScenario(data); addTranscript("assistant", data.reply); await speak(data.reply, data.trace.language);
+    sessionId = data.session_id; localStorage.setItem("voice-router-session", sessionId);
+    renderScenario(data); renderSupervisor(data, timings); addTranscript("assistant", data.reply);
+    if (callActive) {
+      const speechTiming = await speak(data.reply, data.trace.language);
+      updateLatency(speechTiming);
+    }
   } catch (error) { addTranscript("error", error.message); }
   finally {
-    processing = false;
+    processing = false; $("textInput").disabled = false; $("textSend").disabled = false;
     if (callActive) { setVoiceState("listening", "Слушаю вас"); setCallCopy("Я слушаю", "Говорите свободно — сценарий переключится автоматически"); startRecording(); }
   }
 }
 
-async function transcribeRecording(blob) {
+async function transcribeRecording(blob, endedAt) {
   if (!callActive || !blob.size) return;
   processing = true; setVoiceState("processing", "OpenAI распознаёт речь"); setCallCopy("Распознаю", "Преобразую голос в текст");
   try {
@@ -86,7 +179,9 @@ async function transcribeRecording(blob) {
       body: blob
     });
     const data = await response.json(); if (!response.ok) throw new Error(data.error || "Ошибка распознавания речи");
-    processing = false; if (data.text) await routeTranscript(data.text); else if (callActive) startRecording();
+    processing = false;
+    if (data.text) await routeTranscript(data.text, {stt: data.latency_ms, endedAt});
+    else if (callActive) startRecording();
   } catch (error) { processing = false; addTranscript("error", error.message); if (callActive) startRecording(); }
 }
 
@@ -100,7 +195,7 @@ function monitorVoice() {
     for (const value of values) { const normalized = (value - 128) / 128; energy += normalized * normalized; }
     const volume = Math.sqrt(energy / values.length), now = performance.now();
     if (volume > .022) { voiceStarted = true; silenceStartedAt = null; }
-    else if (voiceStarted) { silenceStartedAt ??= now; if (now - silenceStartedAt > 1100) { mediaRecorder.stop(); return; } }
+    else if (voiceStarted) { silenceStartedAt ??= now; if (now - silenceStartedAt > 1100) { utteranceEndedAt = performance.now(); mediaRecorder.voiceDetected = true; mediaRecorder.stop(); return; } }
     else if (now - startedAt > 12000) { mediaRecorder.stop(); return; }
     monitorFrame = requestAnimationFrame(check);
   };
@@ -115,10 +210,19 @@ function startRecording() {
   mediaRecorder.ondataavailable = event => { if (event.data.size) chunks.push(event.data); };
   mediaRecorder.onstop = () => {
     cancelAnimationFrame(monitorFrame); if (!callActive) return;
+    if (!mediaRecorder.voiceDetected) { startRecording(); return; }
     const blob = new Blob(chunks, {type: mediaRecorder.mimeType || "audio/webm"});
-    if (blob.size > 1000) transcribeRecording(blob); else startRecording();
+    if (blob.size > 1000) transcribeRecording(blob, utteranceEndedAt || performance.now()); else startRecording();
   };
   mediaRecorder.start(250); monitorVoice();
+}
+
+function pauseRecording() {
+  cancelAnimationFrame(monitorFrame);
+  if (mediaRecorder?.state === "recording") {
+    mediaRecorder.onstop = () => {};
+    mediaRecorder.stop();
+  }
 }
 
 function startTimer() {
@@ -145,6 +249,11 @@ async function endCall({resetSession = false} = {}) {
   if (resetSession && sessionId) {
     await fetch("/api/reset", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({session_id: sessionId})});
     sessionId = null; lastScenario = null; localStorage.removeItem("voice-router-session");
+    $("traceContent").hidden = true; $("traceEmpty").hidden = false; $("traceTurn").textContent = "—";
+    $("messages").innerHTML = '<div id="emptyTranscript" class="empty-transcript"><span class="empty-icon"><i></i><i></i><i></i><i></i><i></i></span><p>Текст разговора появится здесь после начала звонка</p></div>';
+    const scenarioState = $("scenarioState"); scenarioState.querySelector(".scenario-number").textContent = "—";
+    scenarioState.querySelector("strong").textContent = "Ожидание звонка"; scenarioState.querySelector("small").textContent = "Маршрут определится автоматически";
+    $("scenarioConfidence").hidden = true;
   }
 }
 
@@ -163,4 +272,12 @@ fetch("/api/config").then(response => response.json()).then(config => {
 
 $("callButton").addEventListener("click", () => callActive ? endCall() : startCall());
 $("reset").addEventListener("click", () => endCall({resetSession: true}));
+$("textFallback").addEventListener("submit", event => {
+  event.preventDefault();
+  const text = $("textInput").value.trim();
+  if (!text || processing) return;
+  $("textInput").value = "";
+  if (callActive) pauseRecording();
+  routeTranscript(text, {stt: 0, endedAt: performance.now()}, true);
+});
 checkAudioSupport();

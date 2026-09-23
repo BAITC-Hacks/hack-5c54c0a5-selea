@@ -29,6 +29,10 @@
             <p>Текст разговора появится здесь после начала звонка</p>
           </div>
         </div>
+        <form id="textFallback" class="text-fallback">
+          <label for="textInput">Резервный текстовый ввод</label>
+          <div><input id="textInput" type="text" autocomplete="off" placeholder="Введите реплику клиента…"><button id="textSend" type="submit" aria-label="Отправить текст">→</button></div>
+        </form>
         <div class="scenario-card">
           <span class="scenario-label">ТЕКУЩИЙ СЦЕНАРИЙ</span>
           <div id="scenarioState" class="scenario-state">
@@ -54,6 +58,46 @@
         </div>
         <div class="privacy-note"><svg viewBox="0 0 24 24"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10Zm0-4.2c-2.1-1.3-4.7-3.7-4.7-5.8V7.3L12 5.5l4.7 1.8V12c0 2.1-2.6 4.5-4.7 5.8Z"/></svg>Распознавание и синтез голоса выполняет OpenAI · голос создан ИИ</div>
       </section>
+
+      <aside class="supervisor-panel" aria-label="Панель супервизора">
+        <div class="panel-heading supervisor-heading">
+          <div><span class="section-kicker">DECISION TRACE</span><h1>Супервизор</h1></div>
+          <span id="traceTurn" class="turn-badge">—</span>
+        </div>
+        <div id="traceEmpty" class="trace-empty">
+          <span>Трассировка появится после первой реплики</span>
+        </div>
+        <div id="traceContent" class="trace-content" hidden>
+          <div id="confidenceAlert" class="confidence-alert"><i></i><span></span></div>
+          <section class="trace-section">
+            <h3>Задержка по этапам</h3>
+            <div class="latency-grid">
+              <div><span>STT</span><b id="sttLatency">—</b></div>
+              <div><span>Router</span><b id="routerLatency">—</b></div>
+              <div><span>Scenario</span><b id="scenarioLatency">—</b></div>
+              <div><span>TTS</span><b id="ttsLatency">—</b></div>
+              <div class="latency-total"><span>До ответа</span><b id="totalLatency">—</b></div>
+            </div>
+          </section>
+          <section class="trace-section">
+            <div class="trace-section-title"><h3>Выбранные сценарии</h3><span id="multiIntentBadge" class="mini-badge" hidden>MULTI-INTENT</span></div>
+            <div id="traceScenarios"></div>
+          </section>
+          <section class="trace-section">
+            <h3>Альтернативы</h3>
+            <div id="traceAlternatives" class="trace-muted">Нет альтернатив</div>
+          </section>
+          <section class="trace-section">
+            <h3>Очередь и контекст</h3>
+            <div id="contextState" class="context-state"></div>
+          </section>
+          <section class="trace-section trace-two-columns">
+            <div><h3>Параметры</h3><div id="traceSlots" class="trace-muted">Не извлечены</div></div>
+            <div><h3>Действия</h3><div id="traceActions" class="trace-muted">Нет действий</div></div>
+          </section>
+          <div class="trace-footer"><span id="traceLanguage">—</span><span id="traceMode">—</span></div>
+        </div>
+      </aside>
     </main>
   </div>
   <script src="/app.js"></script>

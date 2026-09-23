@@ -1,0 +1,86 @@
+{
+  "description": "20 hand-authored regression dialogues. Gold expectations are never sent to the router. Not an independent held-out benchmark; expand with real anonymized failures.",
+  "dialogues": [
+    {"id": "quote_to_purchase", "tags": ["boundary", "topic_shift"], "turns": [
+      {"text": "Пока только рассчитайте стоимость ОГПО, покупать не решил.", "routes": ["SC01"]},
+      {"text": "Всё, решил: оформляйте обязательный автополис.", "routes": ["SC02"]}
+    ]},
+    {"id": "price_increase_not_quote", "tags": ["boundary"], "turns": [
+      {"text": "Почему обязательная автостраховка стала дороже прошлогодней? Новый расчёт не нужен, хочу понять причину.", "routes": ["SC32"]}
+    ]},
+    {"id": "charged_not_resend", "tags": ["boundary", "negation"], "turns": [
+      {"text": "Банк снял оплату за ОГПО, но договор так и не выпустили. Копии пока не существует.", "routes": ["SC30"]}
+    ]},
+    {"id": "issued_but_lost", "tags": ["boundary"], "turns": [
+      {"text": "Договор уже действующий, я удалил письмо с файлом. Можете прислать этот же полис повторно?", "routes": ["SC26"]}
+    ]},
+    {"id": "accident_not_claim_status", "tags": ["boundary", "urgency"], "turns": [
+      {"text": "Только что столкнулись на дороге. Заявление ещё не подавал, объясните первые шаги.", "routes": ["SC11"]}
+    ]},
+    {"id": "claim_status_to_dispute", "tags": ["boundary", "topic_shift"], "turns": [
+      {"text": "Я уже подал заявление на выплату, на каком оно этапе?", "routes": ["SC17"]},
+      {"text": "Нашёл решение: сумма ущерба занижена. Хочу оспорить выплату.", "routes": ["SC19"]}
+    ]},
+    {"id": "coverage_to_appointment", "tags": ["boundary", "topic_shift"], "turns": [
+      {"text": "Оплачивается ли приём кардиолога по моему ДМС? Пока не записывайте.", "routes": ["SC22"]},
+      {"text": "Теперь запишите меня к кардиологу на приём.", "routes": ["SC21"]}
+    ]},
+    {"id": "mixed_multi_intent", "tags": ["mixed", "multi_intent"], "turns": [
+      {"text": "ОГПО үшін төледім, со счёта списалось, договор не появился. Заодно подскажите, бөлімше сенбіде ашық па?", "routes": ["SC30", "SC33"], "language": "mixed", "queue": ["SC33"]}
+    ]},
+    {"id": "implicit_multi_intent", "tags": ["multi_intent"], "turns": [
+      {"text": "Отправьте заново мой действующий полис. В котором часу закрывается ближайшее отделение?", "routes": ["SC26", "SC33"], "queue": ["SC33"]}
+    ]},
+    {"id": "operator_negation", "tags": ["negation", "boundary"], "turns": [
+      {"text": "Не переводите меня к человеку. Просто объясните, что означает франшиза в страховке.", "routes": ["SC40"], "handoff": false}
+    ]},
+    {"id": "cancel_negation_kk", "tags": ["kk", "negation"], "turns": [
+      {"text": "Сақтандыруды бұзғым келмейді. Байланыс телефонымды ауыстыру қажет.", "routes": ["SC29"], "language": "kk", "no_execute": true}
+    ]},
+    {"id": "urgent_interrupt_and_resume", "tags": ["topic_shift", "context", "urgency"], "turns": [
+      {"text": "Ближайшее отделение где находится?", "routes": ["SC33"]},
+      {"text": "Подождите, в нас сейчас въехала машина, что делать на месте?", "routes": ["SC11"], "stack_contains": ["SC33"]},
+      {"text": "С аварией разобрался, снова к первому вопросу про отделение — я в Павлодаре.", "routes": ["SC33"], "closed": ["SC11"], "slots": {"city": "Павлодар"}}
+    ]},
+    {"id": "queue_survives_slot_answer", "tags": ["multi_intent", "context"], "turns": [
+      {"text": "Найдите офис и расскажите, какими способами можно оплатить страховку.", "routes": ["SC33", "SC31"], "queue": ["SC31"]},
+      {"text": "Город Семей.", "routes": ["SC33"], "continuation": true, "queue": ["SC31"]},
+      {"text": "Адрес офиса понял, спасибо. Давайте теперь второй вопрос.", "routes": ["SC31"], "queue": [], "closed": ["SC33"]}
+    ]},
+    {"id": "resume_suspended_topic", "tags": ["topic_shift", "context"], "turns": [
+      {"text": "Пришлите ещё раз действующий электронный полис.", "routes": ["SC26"]},
+      {"text": "Отложим это. Не могу зайти в приложение, помогите с доступом.", "routes": ["SC34"], "stack_contains": ["SC26"]},
+      {"text": "С приложением всё получилось, вернёмся к пересылке полиса.", "routes": ["SC26"], "closed": ["SC34"]}
+    ]},
+    {"id": "ru_to_kk_slot_answer", "tags": ["language_switch", "context"], "turns": [
+      {"text": "Какие клиники доступны по ДМС?", "routes": ["SC23"], "language": "ru"},
+      {"text": "Мен Астанада тұрамын.", "routes": ["SC23"], "language": "kk", "continuation": true}
+    ]},
+    {"id": "kk_to_ru_topic_change", "tags": ["language_switch", "topic_shift"], "turns": [
+      {"text": "Көлігіме міндетті сақтандырудың бағасын білгім келеді.", "routes": ["SC01"], "language": "kk"},
+      {"text": "Лучше сначала объясните, почему у меня изменился бонус-малус.", "routes": ["SC32"], "language": "ru"}
+    ]},
+    {"id": "real_ambiguity", "tags": ["ambiguity"], "turns": [
+      {"text": "У меня вопрос по страховке, помогите разобраться.", "routes": ["SYS_UNCLEAR"], "clarify": true, "no_execute": true}
+    ]},
+    {"id": "out_of_scope", "tags": ["boundary"], "turns": [
+      {"text": "Мне нужен кредит наличными, а не страховой полис.", "routes": ["SYS_OUT_OF_SCOPE"], "no_execute": true}
+    ]},
+    {"id": "ten_turn_return", "tags": ["context", "ten_turns"], "turns": [
+      {"text": "Хочу узнать, где ваше отделение.", "routes": ["SC33"]},
+      {"text": "До этого объясните термин франшиза.", "routes": ["SC40"]},
+      {"text": "А что означает страховая сумма?", "routes": ["SC40"]},
+      {"text": "Чем страховая премия отличается от выплаты?", "routes": ["SC40"]},
+      {"text": "Что называют выгодоприобретателем?", "routes": ["SC40"]},
+      {"text": "Объясните слово страхователь.", "routes": ["SC40"]},
+      {"text": "Что такое период ожидания в страховании?", "routes": ["SC40"]},
+      {"text": "Поясните термин лимит ответственности.", "routes": ["SC40"]},
+      {"text": "И что означает исключение из покрытия?", "routes": ["SC40"]},
+      {"text": "С терминами закончили. Вернёмся к самому первому вопросу: город Костанай.", "routes": ["SC33"], "closed": ["SC40"]}
+    ]},
+    {"id": "explicit_queue_cancellation", "tags": ["multi_intent", "cancellation"], "turns": [
+      {"text": "Подскажите расположение офиса и доступные способы оплаты полиса.", "routes": ["SC33", "SC31"], "queue": ["SC31"]},
+      {"text": "Про способы оплаты уже не нужно, оставьте только вопрос об офисе.", "routes": ["SC33"], "queue": [], "closed": ["SC31"]}
+    ]}
+  ]
+}
