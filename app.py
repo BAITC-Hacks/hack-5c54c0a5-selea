@@ -24,6 +24,10 @@ ROOT = Path(__file__).resolve().parent
 STATIC = ROOT / "static"
 
 
+def openai_base_url() -> str:
+    return os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1").rstrip("/")
+
+
 def read_json(name: str):
     return json.loads((ROOT / name).read_text(encoding="utf-8"))
 
@@ -219,8 +223,7 @@ def call_llm(text: str, state: dict) -> tuple[dict, int]:
         },
     }
     request = urllib.request.Request(
-        os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1").rstrip("/")
-        + "/responses",
+        openai_base_url() + "/responses",
         data=json.dumps(body).encode("utf-8"),
         headers={
             "Authorization": f"Bearer {api_key}",
@@ -237,6 +240,92 @@ def call_llm(text: str, state: dict) -> tuple[dict, int]:
         raise RuntimeError(f"LLM API returned {exc.code}: {detail[:500]}") from exc
     latency = round((time.perf_counter() - started) * 1000)
     return json.loads(extract_response_text(payload)), latency
+
+
+def transcribe_audio(audio: bytes, content_type: str, language_hint: str = "") -> dict:
+    api_key = os.getenv("OPENAI_API_KEY", "").strip()
+    if not api_key:
+        raise RuntimeError("OPENAI_API_KEY is required for speech recognition")
+    if not audio:
+        raise ValueError("Audio payload is empty")
+    if len(audio) > 20 * 1024 * 1024:
+        raise ValueError("Audio payload is too large")
+
+    boundary = f"----VoiceRouter{uuid.uuid4().hex}"
+    mime = content_type.split(";", 1)[0] or "audio/webm"
+    extension = mimetypes.guess_extension(mime) or ".webm"
+
+    def field(name: str, value: str) -> bytes:
+        return (
+            f"--{boundary}\r\n"
+            f'Content-Disposition: form-data; name="{name}"\r\n\r\n'
+            f"{value}\r\n"
+        ).encode("utf-8")
+
+    body = b"".join(
+        [
+            field("model", os.getenv("OPENAI_STT_MODEL", "gpt-4o-mini-transcribe")),
+            field("response_format", "json"),
+            field("prompt", f"Saqta Insurance contact center. Preferred locale: {language_hint or 'auto'}. Speech may be Russian, Kazakh, or mixed."),
+            (
+                f"--{boundary}\r\n"
+                f'Content-Disposition: form-data; name="file"; filename="speech{extension}"\r\n'
+                f"Content-Type: {mime}\r\n\r\n"
+            ).encode("utf-8"),
+            audio,
+            f"\r\n--{boundary}--\r\n".encode("ascii"),
+        ]
+    )
+    request = urllib.request.Request(
+        openai_base_url() + "/audio/transcriptions",
+        data=body,
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": f"multipart/form-data; boundary={boundary}",
+        },
+        method="POST",
+    )
+    started = time.perf_counter()
+    try:
+        with urllib.request.urlopen(request, timeout=45) as response:
+            result = json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="replace")
+        raise RuntimeError(f"STT API returned {exc.code}: {detail[:500]}") from exc
+    return {
+        "text": str(result.get("text", "")).strip(),
+        "latency_ms": round((time.perf_counter() - started) * 1000),
+        "model": os.getenv("OPENAI_STT_MODEL", "gpt-4o-mini-transcribe"),
+    }
+
+
+def synthesize_speech(text: str, language: str = "ru") -> bytes:
+    api_key = os.getenv("OPENAI_API_KEY", "").strip()
+    if not api_key:
+        raise RuntimeError("OPENAI_API_KEY is required for speech synthesis")
+    text = text.strip()
+    if not text:
+        raise ValueError("Speech text is empty")
+    language_name = "Kazakh" if language == "kk" else "Russian and Kazakh as written"
+    payload = {
+        "model": os.getenv("OPENAI_TTS_MODEL", "gpt-4o-mini-tts"),
+        "voice": os.getenv("OPENAI_TTS_VOICE", "marin"),
+        "input": text[:4096],
+        "instructions": f"Speak naturally in {language_name}, like a calm insurance contact-center agent.",
+        "response_format": "mp3",
+    }
+    request = urllib.request.Request(
+        openai_base_url() + "/audio/speech",
+        data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+        headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=45) as response:
+            return response.read()
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="replace")
+        raise RuntimeError(f"TTS API returned {exc.code}: {detail[:500]}") from exc
 
 
 def tokenize(value: str) -> set[str]:
@@ -441,6 +530,13 @@ class Handler(SimpleHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
 
+    def send_bytes(self, status: int, data: bytes, content_type: str):
+        self.send_response(status)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
     def do_GET(self):
         if self.path == "/api/config":
             self.send_json(
@@ -448,6 +544,8 @@ class Handler(SimpleHTTPRequestHandler):
                 {
                     "llm_enabled": bool(os.getenv("OPENAI_API_KEY")),
                     "model": os.getenv("OPENAI_MODEL", "gpt-4o-mini"),
+                    "stt_model": os.getenv("OPENAI_STT_MODEL", "gpt-4o-mini-transcribe"),
+                    "tts_model": os.getenv("OPENAI_TTS_MODEL", "gpt-4o-mini-tts"),
                     "scenario_count": len(SCENARIOS),
                 },
             )
@@ -457,8 +555,23 @@ class Handler(SimpleHTTPRequestHandler):
     def do_POST(self):
         try:
             length = int(self.headers.get("Content-Length", "0"))
-            payload = json.loads(self.rfile.read(length).decode("utf-8"))
-            if self.path == "/api/route":
+            raw = self.rfile.read(length)
+            if self.path == "/api/transcribe":
+                self.send_json(
+                    200,
+                    transcribe_audio(
+                        raw,
+                        self.headers.get("Content-Type", "audio/webm"),
+                        self.headers.get("X-Language-Hint", ""),
+                    ),
+                )
+                return
+
+            payload = json.loads(raw.decode("utf-8"))
+            if self.path == "/api/speech":
+                audio = synthesize_speech(str(payload.get("text", "")), str(payload.get("language", "ru")))
+                self.send_bytes(200, audio, "audio/mpeg")
+            elif self.path == "/api/route":
                 self.send_json(200, route_request(payload))
             elif self.path == "/api/reset":
                 SESSIONS.reset(str(payload.get("session_id", "")))

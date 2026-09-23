@@ -41,6 +41,9 @@ python evaluate.py predictions.json dev_utterances.json
 
 - `OPENAI_API_KEY` — включает реальный LLM Router;
 - `OPENAI_MODEL` — модель, по умолчанию `gpt-4o-mini`;
+- `OPENAI_STT_MODEL` — распознавание речи, по умолчанию `gpt-4o-mini-transcribe`;
+- `OPENAI_TTS_MODEL` — синтез речи, по умолчанию `gpt-4o-mini-tts`;
+- `OPENAI_TTS_VOICE` — голос синтеза, по умолчанию `marin`;
 - `OPENAI_BASE_URL` — базовый адрес OpenAI-совместимого Responses API;
 - `PORT` — порт, по умолчанию `8000`.
 

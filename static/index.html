@@ -3,60 +3,59 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#f2f0ea">
   <title>Voice Router — Saqta Insurance</title>
   <link rel="stylesheet" href="/styles.css">
 </head>
 <body>
-  <header>
-    <div>
-      <span class="eyebrow">SAQTA INSURANCE · SUPERVISOR CONSOLE</span>
-      <h1>Voice Router</h1>
-    </div>
-    <div id="status" class="status">Подключение…</div>
-  </header>
+  <div class="app-shell">
+    <header class="topbar">
+      <a class="brand" href="#" aria-label="Voice Router">VOICE ROUTER</a>
+      <div class="top-actions">
+        <label class="language-picker"><span class="sr-only">Язык распознавания</span><select id="speechLang"><option value="ru-RU">RU</option><option value="kk-KZ">KZ</option></select></label>
+        <div id="status" class="system-status"><i></i><span>Подключение</span></div>
+      </div>
+    </header>
 
-  <main>
-    <section class="conversation panel">
-      <div class="panel-title">
-        <div><span class="dot"></span> Разговор с клиентом</div>
-        <button id="reset" class="ghost">Новый разговор</button>
-      </div>
-      <div id="messages" class="messages">
-        <div class="message bot">Здравствуйте! Опишите, пожалуйста, ваш вопрос.</div>
-      </div>
-      <div class="composer">
-        <button id="mic" class="mic" title="Говорить">●</button>
-        <select id="speechLang" aria-label="Язык распознавания">
-          <option value="ru-RU">RU</option>
-          <option value="kk-KZ">KZ</option>
-        </select>
-        <textarea id="input" rows="2" placeholder="Говорите или введите запрос на русском / қазақша…"></textarea>
-        <button id="send" class="send">Отправить</button>
-      </div>
-      <div class="hint">Микрофон использует Web Speech API браузера. Ctrl+Enter — отправить.</div>
-    </section>
-
-    <aside class="trace panel">
-      <div class="panel-title">Трассировка решения</div>
-      <div id="empty" class="empty">После реплики здесь появятся маршрут, уверенность и задержка.</div>
-      <div id="trace" hidden>
-        <div class="metrics">
-          <div><span>Язык</span><strong id="language">—</strong></div>
-          <div><span>Router</span><strong id="latency">—</strong></div>
-          <div><span>Режим</span><strong id="mode">—</strong></div>
+    <main>
+      <aside class="transcript-panel" aria-label="Транскрипция звонка">
+        <div class="panel-heading">
+          <div><span class="section-kicker">LIVE SESSION</span><h1>Транскрипция</h1></div>
+          <span id="callTimer" class="timer">00:00</span>
         </div>
-        <h2>Выбранные сценарии</h2>
-        <div id="scenarios"></div>
-        <h2>Альтернативы</h2>
-        <div id="alternatives" class="muted">Нет</div>
-        <h2>Извлечённые параметры</h2>
-        <pre id="slots">{}</pre>
-        <h2>Действия</h2>
-        <div id="actions" class="muted">Нет</div>
-        <div id="handoff" class="handoff" hidden></div>
-      </div>
-    </aside>
-  </main>
+        <div id="messages" class="transcript-feed" aria-live="polite">
+          <div id="emptyTranscript" class="empty-transcript">
+            <span class="empty-icon"><i></i><i></i><i></i><i></i><i></i></span>
+            <p>Текст разговора появится здесь после начала звонка</p>
+          </div>
+        </div>
+        <div class="scenario-card">
+          <span class="scenario-label">ТЕКУЩИЙ СЦЕНАРИЙ</span>
+          <div id="scenarioState" class="scenario-state">
+            <span class="scenario-number">—</span>
+            <div><strong>Ожидание звонка</strong><small>Маршрут определится автоматически</small></div>
+          </div>
+          <div id="scenarioConfidence" class="confidence" hidden><span id="confidenceValue"></span></div>
+        </div>
+      </aside>
+
+      <section class="voice-stage">
+        <div class="stage-content">
+          <span id="callEyebrow" class="call-eyebrow">ГОЛОСОВОЙ АССИСТЕНТ ГОТОВ</span>
+          <h2 id="callTitle">Начать разговор</h2>
+          <p id="callHint">Нажмите на кнопку и разрешите доступ к микрофону</p>
+          <button id="callButton" class="call-button" type="button" aria-label="Начать звонок" aria-pressed="false">
+            <span class="button-ring ring-one"></span><span class="button-ring ring-two"></span>
+            <span class="waveform" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></span>
+            <span class="phone-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M6.62 10.79a15.46 15.46 0 0 0 6.59 6.59l2.2-2.2a1 1 0 0 1 1.02-.24c1.12.37 2.33.57 3.57.57a1 1 0 0 1 1 1V20a1 1 0 0 1-1 1C10.61 21 3 13.39 3 4a1 1 0 0 1 1-1h3.5a1 1 0 0 1 1 1c0 1.25.2 2.45.57 3.57a1 1 0 0 1-.25 1.02l-2.2 2.2Z"/></svg></span>
+          </button>
+          <div id="callState" class="call-state"><i></i><span>Нажмите, чтобы начать</span></div>
+          <button id="reset" class="new-call" type="button" hidden>Завершить разговор</button>
+        </div>
+        <div class="privacy-note"><svg viewBox="0 0 24 24"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10Zm0-4.2c-2.1-1.3-4.7-3.7-4.7-5.8V7.3L12 5.5l4.7 1.8V12c0 2.1-2.6 4.5-4.7 5.8Z"/></svg>Распознавание и синтез голоса выполняет OpenAI · голос создан ИИ</div>
+      </section>
+    </main>
+  </div>
   <script src="/app.js"></script>
 </body>
 </html>
