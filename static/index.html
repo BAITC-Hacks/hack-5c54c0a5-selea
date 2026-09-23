@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Voice Router — Saqta Insurance</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <header>
+    <div>
+      <span class="eyebrow">SAQTA INSURANCE · SUPERVISOR CONSOLE</span>
+      <h1>Voice Router</h1>
+    </div>
+    <div id="status" class="status">Подключение…</div>
+  </header>
+
+  <main>
+    <section class="conversation panel">
+      <div class="panel-title">
+        <div><span class="dot"></span> Разговор с клиентом</div>
+        <button id="reset" class="ghost">Новый разговор</button>
+      </div>
+      <div id="messages" class="messages">
+        <div class="message bot">Здравствуйте! Опишите, пожалуйста, ваш вопрос.</div>
+      </div>
+      <div class="composer">
+        <button id="mic" class="mic" title="Говорить">●</button>
+        <select id="speechLang" aria-label="Язык распознавания">
+          <option value="ru-RU">RU</option>
+          <option value="kk-KZ">KZ</option>
+        </select>
+        <textarea id="input" rows="2" placeholder="Говорите или введите запрос на русском / қазақша…"></textarea>
+        <button id="send" class="send">Отправить</button>
+      </div>
+      <div class="hint">Микрофон использует Web Speech API браузера. Ctrl+Enter — отправить.</div>
+    </section>
+
+    <aside class="trace panel">
+      <div class="panel-title">Трассировка решения</div>
+      <div id="empty" class="empty">После реплики здесь появятся маршрут, уверенность и задержка.</div>
+      <div id="trace" hidden>
+        <div class="metrics">
+          <div><span>Язык</span><strong id="language">—</strong></div>
+          <div><span>Router</span><strong id="latency">—</strong></div>
+          <div><span>Режим</span><strong id="mode">—</strong></div>
+        </div>
+        <h2>Выбранные сценарии</h2>
+        <div id="scenarios"></div>
+        <h2>Альтернативы</h2>
+        <div id="alternatives" class="muted">Нет</div>
+        <h2>Извлечённые параметры</h2>
+        <pre id="slots">{}</pre>
+        <h2>Действия</h2>
+        <div id="actions" class="muted">Нет</div>
+        <div id="handoff" class="handoff" hidden></div>
+      </div>
+    </aside>
+  </main>
+  <script src="/app.js"></script>
+</body>
+</html>

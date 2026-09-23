@@ -1,0 +1,48 @@
+:root { color-scheme: dark; --bg:#07100e; --panel:#0d1916; --line:#20352e; --green:#43e59c; --text:#ecf5f1; --muted:#8aa198; --amber:#ffbd59; }
+* { box-sizing:border-box; }
+body { margin:0; min-height:100vh; font:15px/1.45 Inter,Segoe UI,Arial,sans-serif; background:radial-gradient(circle at 20% 0,#12362a 0,transparent 32%),var(--bg); color:var(--text); }
+header { height:104px; display:flex; align-items:center; justify-content:space-between; padding:22px 4vw; border-bottom:1px solid var(--line); }
+h1 { margin:3px 0 0; font-size:32px; letter-spacing:-1px; }
+.eyebrow { color:var(--green); font-size:11px; letter-spacing:1.8px; }
+.status { padding:9px 13px; border:1px solid #2b5947; border-radius:999px; color:var(--green); background:#10251d; }
+.status.warning { color:var(--amber); border-color:#6b5025; background:#2b2111; }
+main { display:grid; grid-template-columns:minmax(0,1.25fr) minmax(380px,.75fr); gap:18px; height:calc(100vh - 104px); padding:18px 4vw 28px; }
+.panel { min-height:0; background:rgba(13,25,22,.94); border:1px solid var(--line); border-radius:16px; overflow:hidden; box-shadow:0 20px 60px #0005; }
+.conversation { display:flex; flex-direction:column; }
+.panel-title { min-height:58px; padding:16px 20px; border-bottom:1px solid var(--line); display:flex; align-items:center; justify-content:space-between; font-weight:650; }
+.dot { display:inline-block; width:8px; height:8px; border-radius:50%; background:var(--green); margin-right:8px; box-shadow:0 0 12px var(--green); }
+.ghost { border:0; background:transparent; color:var(--muted); cursor:pointer; }
+.messages { flex:1; overflow:auto; padding:25px; display:flex; flex-direction:column; gap:14px; }
+.message { max-width:78%; padding:13px 16px; border-radius:14px; white-space:pre-wrap; }
+.message.bot { align-self:flex-start; background:#172722; border:1px solid #263d35; }
+.message.client { align-self:flex-end; background:#1d5b43; border:1px solid #28795a; }
+.message.error { align-self:center; color:#ff9c9c; background:#35191b; }
+.composer { display:grid; grid-template-columns:46px 58px 1fr auto; gap:10px; padding:14px 18px; border-top:1px solid var(--line); }
+textarea { resize:none; border:1px solid #2a4038; border-radius:12px; padding:11px 13px; background:#08110f; color:var(--text); outline:none; }
+select { border:1px solid #2a4038; border-radius:12px; padding:0 8px; background:#10201b; color:var(--text); }
+textarea:focus { border-color:var(--green); }
+button { font:inherit; }
+.send,.mic { border:0; border-radius:12px; cursor:pointer; }
+.send { padding:0 18px; background:var(--green); color:#062217; font-weight:700; }
+.mic { color:var(--green); background:#172a23; font-size:14px; }
+.mic.listening { color:#ff6464; animation:pulse 1s infinite; }
+.hint { color:var(--muted); padding:0 20px 13px 74px; font-size:12px; }
+.trace { overflow:auto; }
+.trace #trace { padding:18px; }
+.empty { color:var(--muted); padding:40px 24px; text-align:center; }
+.metrics { display:grid; grid-template-columns:repeat(3,1fr); gap:8px; }
+.metrics div { background:#08110f; border:1px solid var(--line); border-radius:10px; padding:10px; }
+.metrics span { display:block; color:var(--muted); font-size:11px; text-transform:uppercase; }
+.metrics strong { display:block; margin-top:3px; }
+h2 { margin:22px 0 10px; font-size:12px; color:var(--muted); text-transform:uppercase; letter-spacing:1px; }
+.scenario { padding:12px; border:1px solid #29483c; border-radius:12px; background:#10231c; margin-bottom:8px; }
+.scenario>div:first-child { display:flex; justify-content:space-between; color:var(--green); }
+.scenario p { margin:8px 0 0; color:#bed0c8; font-size:13px; }
+.bar { height:4px; margin-top:8px; background:#243b33; border-radius:3px; overflow:hidden; }
+.bar i { display:block; height:100%; background:var(--green); }
+.muted,.alternative { color:var(--muted); font-size:13px; }
+pre { max-height:150px; overflow:auto; padding:12px; background:#08110f; border-radius:10px; color:#acd7c5; }
+.chip { display:inline-block; padding:6px 9px; margin:0 5px 5px 0; border:1px solid #315343; border-radius:999px; font-size:12px; color:#bde5d4; }
+.handoff { margin-top:18px; padding:12px; border:1px solid #7b5425; border-radius:10px; color:#ffd89d; background:#2b2111; }
+@keyframes pulse { 50% { transform:scale(1.08); box-shadow:0 0 20px #ff6464; } }
+@media (max-width:900px) { main { grid-template-columns:1fr; height:auto; } .conversation { min-height:70vh; } .trace { min-height:500px; } header { padding-inline:20px; } }
